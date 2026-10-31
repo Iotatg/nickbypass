@@ -39,9 +39,10 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+import re
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urljoin
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -561,13 +562,19 @@ class SeleniumHooks:
     """Wrap Selenium so every navigation point prints the real URL.
 
     Nothing here changes what the page does: ``get`` still navigates, ``click``
-    still clicks, ``quit`` still quits. The wrappers only read and print.
+    still clicks, ``quit`` still quits. The wrappers only read and print. The
+    one addition is ``goog:loggingPrefs``, which makes ChromeDriver keep its own
+    DevTools event log - that log is the only place a 302 ``Location``, a
+    ``meta refresh`` or the *reason* a navigation started is recorded.
     """
 
     def __init__(self) -> None:
         self.t0 = time.time()
         self.events: List[Dict[str, Any]] = []
         self.drivers: List[Any] = []
+        self.net: List[Dict[str, Any]] = []
+        self.first_html = ""
+        self.first_html_url = ""
         self._last = ""
         self._installed = False
 
@@ -613,6 +620,14 @@ class SeleniumHooks:
                 self_hooks.rec("current_url AFTER get", raw_get_url(self))
             except Exception:
                 pass
+            # Snapshot the gate document before it navigates away: this is the
+            # only moment the server-sent HTML still exists.
+            if not self_hooks.first_html:
+                try:
+                    self_hooks.first_html = self.page_source or ""
+                    self_hooks.first_html_url = raw_get_url(self)
+                except Exception:
+                    pass
 
         WebDriver.get = get            # type: ignore[assignment]
 
@@ -645,7 +660,6 @@ class SeleniumHooks:
                         break
             if opts is not None:
                 try:
-                    # Network log: the only place a 302 target is visible.
                     opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
                 except Exception as exc:
                     self_hooks.rec("note", "", detail=f"loggingPrefs rejected: {exc}")
@@ -663,44 +677,189 @@ class SeleniumHooks:
                 self_hooks.rec("current_url BEFORE RETURN", raw_get_url(self))
             except Exception:
                 pass
-            self_hooks.dump_perf(self)
+            self_hooks.collect(self)
             return orig_quit(self)
 
         WebDriver.quit = quit_        # type: ignore[assignment]
         self.rec("hooks installed", "")
 
-    # -- network log -----------------------------------------------------
-    def dump_perf(self, drv: Any) -> None:
+    # -- devtools log ----------------------------------------------------
+    def collect(self, drv: Any) -> None:
         try:
             entries = drv.get_log("performance")
         except Exception as exc:
             self.rec("note", "", detail=f"performance log unavailable: {type(exc).__name__}")
             return
-        docs = 0
+        msgs: List[Dict[str, Any]] = []
         for e in entries or []:
             try:
-                msg = json.loads(e.get("message", "{}")).get("message", {})
+                msgs.append(json.loads(e.get("message", "{}")).get("message", {}))
             except Exception:
                 continue
-            m = msg.get("method", "")
-            p = msg.get("params", {}) or {}
-            if m == "Network.requestWillBeSent" and p.get("type") == "Document":
+        stamps = [(m.get("params") or {}).get("timestamp") for m in msgs]
+        nums = [s for s in stamps if isinstance(s, (int, float))]
+        base = min(nums) if nums else 0.0
+        state = {"last": base}
+
+        def rel(p: Dict[str, Any]) -> int:
+            ts = p.get("timestamp")
+            if isinstance(ts, (int, float)):
+                state["last"] = ts
+            # Some Page.* events carry no timestamp; they inherit the last one
+            # seen so the order stays readable instead of showing -1.
+            return int((state["last"] - base) * 1000)
+
+        out("[net] timeline (ms since the first devtools event)")
+        for m in msgs:
+            meth = m.get("method", "")
+            p = m.get("params") or {}
+            t = rel(p)
+            if meth == "Network.requestWillBeSent":
+                req = p.get("request") or {}
+                url = req.get("url", "")
+                typ = p.get("type", "")
                 red = p.get("redirectResponse") or {}
-                docs += 1
-                url_ = (p.get("request") or {}).get("url", "")
-                self.rec("net-doc", url_,
-                         status=red.get("status", ""), frm=(red.get("url") or "")[:60])
-                # A redirect target is a document request that answered 3xx:
-                # that is the only evidence a hop existed at all.
-                if 300 <= int(red.get("status") or 0) < 400:
-                    self.rec("net-302", url_, status=red.get("status"),
-                             frm=(red.get("url") or "")[:60])
-            elif m == "Network.responseReceived":
-                r = p.get("response", {}) or {}
-                if 300 <= int(r.get("status") or 0) < 400:
-                    self.rec("net-302", r.get("url", ""), status=r.get("status"))
-        if not docs:
-            self.rec("note", "", detail="network log held no Document requests")
+                init = (p.get("initiator") or {}).get("type", "")
+                self.net.append({"kind": "req", "t": t, "url": url, "type": typ,
+                                 "status": red.get("status"), "frm": red.get("url", ""),
+                                 "initiator": init})
+                if typ in ("Document", "XHR", "Fetch", "EventSource", "WebSocket") or red or authish(url):
+                    bits = [f"[net] +{t}ms REQ", f"type={typ or '?'}"]
+                    if init:
+                        bits.append(f"initiator={init}")
+                    if red:
+                        bits.append(f"redirect_from={red.get('url', '')[:60]} status={red.get('status')}")
+                    out(" ".join(bits) + f"  {url[:110]}")
+            elif meth == "Network.responseReceived":
+                r = p.get("response") or {}
+                url = r.get("url", "")
+                status = r.get("status")
+                loc = ""
+                for k, v in (r.get("headers") or {}).items():
+                    if k.lower() == "location":
+                        loc = v
+                self.net.append({"kind": "resp", "t": t, "url": url,
+                                 "status": status, "loc": loc, "type": p.get("type", "")})
+                if p.get("type") in ("Document", "XHR", "Fetch") or authish(url) or (status and 300 <= status < 400):
+                    out(f"[net] +{t}ms RESP status={status}  {url[:100]}"
+                        + (f"  location={loc[:80]}" if loc else ""))
+            elif meth == "Network.responseReceivedExtraInfo":
+                status = p.get("status")
+                headers = p.get("headers") or {}
+                loc = headers.get("Location") or headers.get("location") or ""
+                if loc:
+                    self.net.append({"kind": "extra", "t": t, "url": loc,
+                                     "status": status, "loc": loc})
+                    out(f"[net] +{t}ms RAW status={status}  location={loc[:90]}")
+            elif meth == "Page.frameRequestedNavigation":
+                self.net.append({"kind": "nav-req", "t": t, "url": p.get("url", ""),
+                                 "reason": p.get("reason", ""),
+                                 "disposition": p.get("disposition", "")})
+                out(f"[nav] +{t}ms REQUESTED reason={p.get('reason')} "
+                    f"disposition={p.get('disposition')}  {p.get('url', '')[:100]}")
+            elif meth == "Page.frameScheduledNavigation":
+                self.net.append({"kind": "nav-sched", "t": t, "url": p.get("url", ""),
+                                 "reason": p.get("reason", ""), "delay": p.get("delay")})
+                out(f"[nav] +{t}ms SCHEDULED delay={p.get('delay')} "
+                    f"reason={p.get('reason')}  {p.get('url', '')[:100]}")
+            elif meth == "Page.frameNavigated":
+                f = p.get("frame") or {}
+                if not f.get("parentId"):          # main frame only
+                    self.net.append({"kind": "nav-commit", "t": t, "url": f.get("url", "")})
+                    out(f"[nav] +{t}ms COMMITTED  {f.get('url', '')[:100]}")
+
+        # Anything auth-ish anywhere in the log, whatever the request type.
+        probes = [r for r in self.net if authish(r.get("url", ""))]
+        if probes:
+            out("[auth-probe] auth-ish URL found in the devtools log:")
+            for r in probes:
+                out(f"[auth-probe]   +{r['t']}ms {r['kind']} type={r.get('type', '-')} "
+                    f"initiator={r.get('initiator', '-')}  {r['url'][:100]}")
+        else:
+            out("[auth-probe] no auth-ish URL in ANY request type (document, xhr, fetch, "
+                "script, iframe, redirect target)")
+
+    # -- html evidence ---------------------------------------------------
+    def scan_html(self, token: str) -> None:
+        h = self.first_html or ""
+        if not h:
+            out("[html] no snapshot captured")
+            return
+        out(f"[html] gate document {len(h)} bytes from {self.first_html_url or '-'}")
+        n = h.lower().count(token.lower()) if token else 0
+        out(f"[html] '{token}' appears {n}x")
+        if n:
+            for m in list(re.finditer(re.escape(token), h, re.I))[:3]:
+                s = max(0, m.start() - 90)
+                snippet = re.sub(r"\s+", " ", h[s:m.end() + 90])
+                out(f"[html]   ...{snippet}...")
+        for pat in ('location.href', 'window.location', 'location.replace',
+                    'location.assign', 'http-equiv="refresh"', "http-equiv='refresh'",
+                    'window.open', '.submit('):
+            c = h.lower().count(pat.lower())
+            if c:
+                out(f"[html] pattern {pat!r} x{c}")
+
+    # -- mechanism -------------------------------------------------------
+    def chain(self, gate: str) -> List[Dict[str, str]]:
+        """Walk gate -> ... -> destination using the devtools events.
+
+        Two kinds of edge exist: a navigation *request* (script, meta refresh,
+        link, form) and an HTTP redirect (302 with a Location). Keeping them in
+        one ordered list is what makes the real mechanism visible.
+        """
+        def same(a: str, b: str) -> bool:
+            return bool(a) and bool(b) and a.rstrip("/") == b.rstrip("/")
+
+        edges: List[Dict[str, str]] = []
+        cur = gate
+        for r in self.net:
+            if r["kind"] == "nav-req" and r.get("url") and not same(r["url"], cur):
+                edges.append({"from": cur, "to": r["url"],
+                              "how": r.get("reason") or "navigation"})
+                cur = r["url"]
+            elif r["kind"] == "req" and r.get("frm") and not same(r["url"], r["frm"]):
+                edges.append({"from": r["frm"], "to": r["url"],
+                              "how": f"http{r.get('status')}"})
+                if same(r["frm"], cur):
+                    cur = r["url"]
+        return edges
+
+    def mechanism(self, dest: str, gate: str) -> Tuple[str, str]:
+        edges = self.chain(gate)
+        if not edges:
+            return "F", "no navigation edge recorded at all"
+
+        first = edges[0]
+        how = first["how"]
+        tail = ""
+        if not (dest and first["to"].rstrip("/") == dest.rstrip("/")):
+            rest = [e["how"] for e in edges[1:]]
+            tail = f", then {len(rest)} more step(s): {', '.join(rest[:4])}"
+
+        if how.startswith("http3") or how.startswith("http2"):
+            return "A", (f"the gate document itself answered {how[4:]} with a Location "
+                         f"to {first['to'][:70]}{tail}")
+        if how == "metaTagRefresh":
+            return "C", f"meta refresh to {first['to'][:70]}{tail}"
+        if how == "scriptInitiated":
+            if dest and dest in self.first_html:
+                return "B", ("the destination URL is a literal in the gate HTML and a "
+                             f"script navigated to it{tail}")
+            return "D", ("no literal destination in the gate HTML - a script or API "
+                         f"response produced the URL, then navigated{tail}")
+        if how in ("link", "formSubmission", "linkClicked"):
+            return "E", f"a {how} started the navigation to {first['to'][:70]}{tail}"
+        return "E", f"navigation started by {how}{tail}"
+
+    def chain_line(self, gate: str, dest: str) -> str:
+        edges = self.chain(gate)
+        if not edges:
+            return "(no navigation edges)"
+        parts = [gate or "?"]
+        for e in edges:
+            parts.append(f"--{e['how']}--> {e['to']}")
+        return "  ".join(parts)
 
     # -- summary ---------------------------------------------------------
     def summary(self, inputs: List[str], steps: List[str], final: str) -> str:
@@ -712,7 +871,12 @@ class SeleniumHooks:
                 continue
             if authish(e.get("url", "")):
                 seen.setdefault(e["ch"], []).append(e["url"])
+        for r in self.net:
+            if authish(r.get("url", "")):
+                seen.setdefault("devtools:" + r["kind"], []).append(r["url"])
 
+        gate = inputs[0] if inputs else ""
+        dest = final or (steps[-1] if steps else "")
         out(f"[verdict] browser input(s): {inputs or '-'}")
         out(f"[verdict] browser output  : {final or '-'}")
         out(f"[verdict] steps           : {steps or '-'}")
@@ -722,28 +886,30 @@ class SeleniumHooks:
         out(f"[verdict] HANDOFF = {'AUTH_URL' if handoff_auth else 'GATE_URL (or other)'}")
 
         if handoff_auth:
-            case = "A"
-            why = ("the browser was handed the auth URL and navigated away from it, "
-                   "so steps only ever held what came after")
+            case, why = "A", ("the browser was handed the auth URL and navigated away from it")
         elif "current_url" in seen:
-            case = "C"
-            why = ("the auth URL was the live current_url but never made it into "
-                   "steps - the loop stepped over it")
-        elif "net-302" in seen:
-            case = "B"
-            why = ("the auth URL appeared only as a redirect target inside the run; "
-                   "steps keep the committed URL, not the hop")
-        elif "net-doc" in seen:
-            case = "D"
-            why = "the auth URL was requested but never became the page"
+            case, why = "C", "the auth URL was the live current_url but never reached steps"
+        elif "devtools:req" in seen or "devtools:resp" in seen:
+            case, why = "B", "the auth URL appeared only as a redirect target inside the run"
         else:
-            case = "E"
-            why = "no channel saw an auth URL at all on this device"
-
+            case, why = "E", "no channel saw an auth URL at all on this device"
         out(f"[verdict] CASE {case}: {why}")
+
+        mech, detail = self.mechanism(dest, gate)
+        out(f"[verdict] MECHANISM = {mech}: {detail}")
+        out(f"[verdict] CHAIN = {self.chain_line(gate, dest)}")
+        if dest:
+            try:
+                from urllib.parse import urlparse
+                self.scan_html(urlparse(dest).hostname.split(".")[0] if urlparse(dest).hostname else "")
+            except Exception:
+                pass
+
         out("TRACE-SUMMARY " + json.dumps({
-            "engine": "selenium", "case": case, "handoff": "auth" if handoff_auth else "gate",
-            "final": final, "auth_seen_in": sorted(seen.keys()), "events": len(self.events),
+            "engine": "selenium", "case": case, "mechanism": mech,
+            "handoff": "auth" if handoff_auth else "gate",
+            "gate": gate, "destination": dest,
+            "auth_seen_in": sorted(seen.keys()), "events": len(self.events),
         }, ensure_ascii=False))
         return case
 
@@ -777,7 +943,7 @@ def selenium_source_dump() -> None:
                 break
 
 
-def selenium_run(url: str, timeout: float) -> int:
+def selenium_run(url: str, timeout: float, repeat: int = 1) -> int:
     global self_hooks
     selenium_source_dump()
     self_hooks = SeleniumHooks()
@@ -798,16 +964,41 @@ def selenium_run(url: str, timeout: float) -> int:
         except Exception as exc:
             out(f"[browser] direct resolve failed: {type(exc).__name__}: {exc}")
     case = self_hooks.summary(inputs, steps, final)
+
+    if repeat > 1:
+        hr(f"repeat x{repeat}: does the destination stay the same?")
+        seen: List[str] = []
+        from linkresolver.browser import BrowserResolver
+        for i in range(repeat):
+            try:
+                f, _s, _n = BrowserResolver(headless=True, timeout=timeout).resolve(url)
+                seen.append(f or "-")
+                out(f"[repeat] run {i + 1}: {f or '-'}")
+            except Exception as exc:
+                seen.append(f"error:{type(exc).__name__}")
+                out(f"[repeat] run {i + 1}: failed {type(exc).__name__}")
+        uniq = len({s.rstrip("/") for s in seen})
+        out(f"[verdict] DESTINATION {'VARIES' if uniq > 1 else 'STABLE'} "
+            f"({uniq} distinct in {len(seen)} runs)")
+
     hr("done")
     out(f"case={case}  - send the whole output back.")
     return 0
 
-
 # ----------------------------------------------------------------------- main
 
 def main(argv: List[str]) -> int:
-    url = argv[1] if len(argv) > 1 and not argv[1].startswith("-") else DEFAULT_URL
-    timeout = float(argv[2]) if len(argv) > 2 else 30.0
+    args = [a for a in argv[1:]]
+    repeat = 1
+    if "--repeat" in args:
+        i = args.index("--repeat")
+        try:
+            repeat = max(1, min(5, int(args[i + 1])))
+        except Exception:
+            repeat = 2
+        del args[i:i + 2]
+    url = args[0] if args else DEFAULT_URL
+    timeout = float(args[1]) if len(args) > 1 else 30.0
 
     hr("environment")
     ident = engine_identity()
@@ -816,7 +1007,7 @@ def main(argv: List[str]) -> int:
     if ident["engine"] == "selenium":
         out("[env] Selenium engine on this device - tracing it as it is, not "
             "the Playwright copy in the repo.")
-        return selenium_run(url, timeout)
+        return selenium_run(url, timeout, repeat)
     if ident["engine"] != "playwright":
         out(f"[env] unrecognised engine ({ident['engine']}); refusing to guess.")
         return 2
