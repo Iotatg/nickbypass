@@ -43,6 +43,13 @@ TRACE = {
     ]
 }
 
+JIO = {"label": "Direct — the machine running the bot", "ip": "49.36.12.84",
+       "cc": "IN", "city": "Mumbai", "asn": "AS55836",
+       "isp": "Reliance Jio Infocomm Limited", "kind": "🏠 home or mobile line"}
+IP_VERDICT = ("You're on an Indian home line, so vplink, gplinks and friends open "
+              "without any proxy. Keep the pool off with <code>/proxy off</code> — "
+              "your own IP is better than anything it can find.")
+
 CARDS = [
     ("result", F.result_card(OK1, 1, 1), ["🧭 Path", "🔗 Open"]),
     ("result", F.result_card(OK2, 2, 3), ["🧭 Path", "🔗 Open"]),
@@ -59,6 +66,7 @@ CARDS = [
          "socks5://139.59.1.14:1080": {"latency": 388, "city": "Bengaluru", "residential": True},
          "http://103.87.12.9:3128": {"latency": 640, "city": "Delhi"}},
         "IN", 34), []),
+    ("ip", F.ip_card([JIO], IP_VERDICT), []),
     ("status", F.status_card(7 * 3600 + 42 * 60, 2, 1, 148, 902, 311, 44, 1204, 987,
                              True, "", "IN pool · 34 IPs · 9 site-tested · 240 ms"), []),
     ("help", F.help_text(False), []),
@@ -105,7 +113,7 @@ def build() -> str:
     for kind, text, buttons in CARDS:
         if kind != last:
             titles = {"result": "Result cards", "trace": "Path / trace", "scan": "Pool scan",
-                      "pool": "Pool list", "status": "Status", "help": "Start screen",
+                      "pool": "Pool list", "status": "Status", "help": "Start screen", "ip": "Exit IP check",
                       "mode": "Mode switch"}
             parts.append(f'<div class="label">{titles[kind]}</div>')
             last = kind

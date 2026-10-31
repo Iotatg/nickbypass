@@ -118,6 +118,31 @@ check("HTML 注入被转义", "<script>" in F.result_card(evil), False)
 long_steps = [{"kind": "request", "url": "https://a.example/" + "x" * 80, "status": 200, "detail": "d" * 60} for _ in range(80)]
 check("轨迹截断", len(F.trace_card({"steps": long_steps})) <= F.MAX_LEN, True)
 
+print("\n[5b] 出口 IP 判定（/ip）")
+from nickbot.handlers import _ip_block, _ip_verdict  # noqa: E402
+
+dc = _ip_block("x", {"query": "1.2.3.4", "countryCode": "SG", "city": "Singapore",
+                     "as": "AS132203 Tencent Building, Kejizhongyi Avenue",
+                     "isp": "Shenzhen Tencent Computer Systems Company Limited"})
+check("机房 ASN 被认出", dc["hosting"], True)
+check("ASN 只留编号", dc["asn"], "AS132203")
+check("ISP 名称被截断", len(dc["isp"]) <= 43, True)
+check("机房建议要代理", "PROXY" in _ip_verdict(dc), True)
+
+jio = _ip_block("x", {"query": "49.36.12.84", "countryCode": "IN", "city": "Mumbai",
+                      "as": "AS55836 Reliance Jio Infocomm Limited",
+                      "isp": "Reliance Jio Infocomm Limited"})
+check("印度宽带被判住宅", jio["residential"], True)
+check("印度住宅说不需要代理", "without any proxy" in _ip_verdict(jio), True)
+check("印度住宅建议关掉池子", "/proxy off" in _ip_verdict(jio), True)
+
+us = _ip_block("x", {"query": "8.8.8.8", "countryCode": "US", "city": "Mountain View",
+                     "as": "AS15169 Google LLC", "isp": "Google LLC"})
+check("外国机房不建议开池子", "Indian" not in _ip_verdict(us), True)
+
+check("IP 卡片标签合法", "<b>" in F.ip_card([jio], "ok") and "</b>" in F.ip_card([jio], "ok"), True)
+check("查不到时给错误行", "timed out" in F.ip_card([{"label": "x", "error": "timed out"}], "v"), True)
+
 print("\n[6] 命令注册（用假 token 构建，不联网）")
 from nickbot.bot import build  # noqa: E402
 
@@ -128,7 +153,7 @@ for group in app.handlers.values():
     for h in group:
         for name in getattr(h, "commands", []) or []:
             cmds.add(name)
-need = {"start", "help", "id", "mode", "supported", "status", "bypass", "stats", "users", "ban", "unban", "broadcast"}
+need = {"start", "help", "id", "mode", "supported", "status", "ip", "bypass", "stats", "users", "ban", "unban", "broadcast"}
 check("命令齐全", need.issubset(cmds), True)
 check("有回调处理", any("CallbackQueryHandler" in type(h).__name__ for g in app.handlers.values() for h in g), True)
 

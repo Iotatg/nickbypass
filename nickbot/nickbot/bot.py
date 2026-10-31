@@ -23,6 +23,7 @@ USER_COMMANDS = [
     BotCommand("mode", "fast · auto · browser"),
     BotCommand("supported", "sites I already know"),
     BotCommand("status", "engine health and cache"),
+    BotCommand("ip", "do I need a proxy here?"),
     BotCommand("id", "your Telegram ID"),
 ]
 
@@ -82,6 +83,7 @@ def build(cfg: Config) -> Application:
     app.add_handler(CommandHandler("supported", H.cmd_supported))
     app.add_handler(CommandHandler("sites", H.cmd_supported))
     app.add_handler(CommandHandler("status", H.cmd_status))
+    app.add_handler(CommandHandler("ip", H.cmd_ip))
     app.add_handler(CommandHandler("bypass", H.cmd_bypass))
     app.add_handler(CommandHandler("b", H.cmd_bypass))
 

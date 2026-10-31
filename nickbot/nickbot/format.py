@@ -259,6 +259,7 @@ def help_text(is_owner: bool = False) -> str:
         "· <code>/mode</code> — fast, auto or browser\n"
         "· <code>/supported</code> — the sites I already know\n"
         "· <code>/status</code> — engine health, cache, queue\n"
+        "· <code>/ip</code> — check whether this machine even needs a proxy\n"
         "· <code>/id</code> — your Telegram ID\n\n"
         "<b>Speed</b>\n"
         "Most links land in under two seconds on the HTTP path. The browser only "
@@ -389,6 +390,25 @@ def stats_card(st: Dict[str, Any], top: List[tuple]) -> str:
 
 
 # ---------------------------------------------------------------- short texts
+
+
+def ip_card(blocks: List[Dict[str, Any]], verdict: str) -> str:
+    """'Do I even need a proxy here?' — answered with what the sites actually see."""
+    lines = ["🛰 <b>What the sites see</b>", ""]
+    for b in blocks:
+        lines.append(f"<b>{h(b.get('label', 'Exit IP'))}</b>")
+        if b.get("error"):
+            lines += [f"<i>{h(b['error'])}</i>", ""]
+            continue
+        where = " · ".join(x for x in (b.get("cc"), b.get("city")) if x)
+        lines.append(f"<code>{h(b.get('ip', '?'))}</code>" + (f" · {h(where)}" if where else ""))
+        net = " · ".join(x for x in (b.get("asn"), b.get("isp")) if x)
+        if net:
+            lines.append(h(net))
+        lines.append(b.get("kind", ""))
+        lines.append("")
+    lines += ["<b>Verdict</b>", verdict]
+    return "\n".join(lines)
 
 
 def resolving(n: int) -> str:

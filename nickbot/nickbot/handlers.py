@@ -400,6 +400,95 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply_proxy_check(msg, arg, saved=True)
 
 
+async def _whois(proxy: str = "") -> Dict:
+    """Ask ip-api who we look like from a given exit (or from the box itself)."""
+    kw: Dict = dict(timeout=httpx.Timeout(9, connect=6), verify=False)
+    if proxy:
+        kw["proxy"] = proxy
+    async with httpx.AsyncClient(**kw) as c:
+        r = await c.get(
+            "http://ip-api.com/json/?fields=status,message,countryCode,regionName,city,"
+            "isp,org,as,query"
+        )
+        d = r.json()
+    if d.get("status") != "success":
+        raise RuntimeError(d.get("message") or "lookup failed")
+    return d
+
+
+def _ip_block(label: str, d: Dict) -> Dict:
+    from .proxyfarm import is_hosting, is_residential
+
+    isp = (d.get("isp") or d.get("org") or "").strip()
+    asn = (d.get("as") or "").split(" ")[0] if d.get("as") else ""
+    hosting = is_hosting(isp) or is_hosting(d.get("as") or "")
+    resi = (not hosting) and (is_residential(isp) or is_residential(d.get("as") or ""))
+    if hosting:
+        kind = "🏢 datacenter / hosting"
+    elif resi:
+        kind = "🏠 home or mobile line"
+    else:
+        kind = "❔ ISP I don't recognise"
+    return {
+        "label": label, "ip": d.get("query", "?"),
+        "cc": (d.get("countryCode") or ""), "city": d.get("city") or "",
+        "asn": asn, "isp": isp[:42] + ("…" if len(isp) > 42 else ""), "kind": kind,
+        "hosting": hosting, "residential": resi,
+    }
+
+
+def _ip_verdict(b: Optional[Dict]) -> str:
+    if not b or b.get("error"):
+        return "Couldn't reach the lookup service — check the network and try again."
+    if b.get("hosting"):
+        return ("Datacenter ASN. The IP-gated sites will refuse this no matter which "
+                "browser you use — run the bot on a home or mobile line, or point "
+                "<code>PROXY</code> at a residential one.")
+    if b.get("residential"):
+        if b.get("cc") == "IN":
+            return ("You're on an Indian home line, so vplink, gplinks and friends open "
+                    "without any proxy. Keep the pool off with <code>/proxy off</code> — "
+                    "your own IP is better than anything it can find.")
+        return (f"Home line, but in {b.get('cc') or 'another country'}. Sites that check "
+                "the country will still say no — <code>/proxy on IN</code> if you need "
+                "an Indian exit.")
+    return ("I can't place this ISP. Send a link and let the engine answer — if it hits "
+            "the VPN wall, that's your verdict.")
+
+
+async def cmd_ip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Answer 'do I need a proxy here?' with evidence."""
+    if not await _guard(update, context):
+        return
+    r = rt(context)
+    cfg = r.cfg
+    blocks: List[Dict] = []
+    direct: Optional[Dict] = None
+
+    try:
+        direct = _ip_block("Direct — the machine running the bot", await _whois())
+        blocks.append(direct)
+    except Exception as exc:
+        blocks.append({"label": "Direct — the machine running the bot",
+                       "error": f"{type(exc).__name__}: {str(exc)[:110]}"})
+
+    effective = direct
+    if cfg.proxy:
+        try:
+            via = _ip_block("Via your fixed proxy", await _whois(cfg.proxy))
+            blocks.append(via)
+            effective = via
+        except Exception as exc:
+            blocks.append({"label": "Via your fixed proxy",
+                           "error": f"{type(exc).__name__}: {str(exc)[:110]}"})
+
+    await update.effective_message.reply_text(
+        F.ip_card(blocks, _ip_verdict(effective)),
+        parse_mode=ParseMode.HTML,
+        link_preview_options=NO_PREVIEW,
+    )
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     r = rt(context)
     up = int(time.time() - r.started)

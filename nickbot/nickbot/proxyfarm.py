@@ -82,6 +82,14 @@ RESIDENTIAL_HINTS = (
 )
 
 
+def is_hosting(isp: str) -> bool:
+    """True if the name smells like a datacenter / VPN provider."""
+    low = (isp or "").lower()
+    if not low:
+        return False
+    return any(h in low for h in HOSTING_HINTS)
+
+
 def is_residential(isp: str) -> bool:
     """粗判：不是云厂商 ASN，且像本地运营商/宽带。"""
     low = (isp or "").lower()
