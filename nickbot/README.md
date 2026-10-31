@@ -65,6 +65,7 @@ too, if you have one.
 | `/mode auto\|fast\|browser` | per-user strategy |
 | `/supported` | known sites |
 | `/status` | uptime, in-flight, cache, proxy |
+| `/ip` | what the sites see — exit IP, ASN, and whether a proxy is needed here |
 | `/proxy <url>` · `/proxy clear` | owner only — fixed exit IP, no restart |
 | `/proxy on [IN]` · `/proxy off` | owner only — turn the country IP pool on/off |
 | `/proxy scan [IN] [url]` | owner only — refill + verify the pool now |
@@ -140,6 +141,38 @@ help; only a residential/mobile Indian IP does.
 # real fix: one residential IP, set once
 PROXY=http://user:pass@residential-host:port
 ```
+
+### Do I need a proxy? (running it yourself)
+
+If you run the bot on your own machine in India, on a normal broadband or mobile
+connection: **no**. Your ISP ASN is residential, so `vplink`, `gplinks` and the
+rest open on the first request. Adding a proxy there only makes it slower.
+
+```bash
+# on your own connection
+PROXY=
+PROXY_FARM=false
+```
+
+Ask the bot with `/ip` — it prints the exit IP, the ASN and the verdict:
+
+```
+🛰 What the sites see
+
+Direct — the machine running the bot
+49.36.12.84 · IN · Mumbai
+AS55836 · Reliance Jio Infocomm Limited
+🏠 home or mobile line
+
+Verdict
+You're on an Indian home line, so vplink, gplinks and friends open without any
+proxy. Keep the pool off with /proxy off — your own IP is better than anything
+it can find.
+```
+
+You **do** need one when the answer is `🏢 datacenter / hosting` — a VPS, a cloud
+box, a home server behind a hosting provider, or a VPN. Same for the country: a
+residential line outside India passes some gates but not the ones that check geo.
 
 **The farm (`PROXY_FARM=true`) is the free fallback.** It harvests Indian
 candidates from public lists, asks each proxy for its own exit IP, batch-checks
