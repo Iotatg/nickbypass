@@ -42,6 +42,17 @@ GATE_SUBDOMAINS: Set[str] = {
     "r", "s", "t", "short", "url", "verify", "secure", "gateway", "get",
 }
 
+# A credential-issuing endpoint: it hands you a key and *is* the destination.
+# ``auth.<something>.workers.dev/generate?code=...`` is where vplink.in's chain
+# really ends; everything that looks like it comes "after" is an ad page.
+AUTH_HOST_LABELS: Set[str] = {"auth", "authorize", "auth2", "oauth", "key", "keys", "token"}
+AUTH_SEGMENTS: Set[str] = {
+    "generate", "generated", "generator",
+    "auth", "authorize", "authorization", "oauth",
+    "key", "keys", "token", "activate", "activation",
+}
+AUTH_PARAMS: Set[str] = {"code", "token", "key", "auth", "authkey", "keycode"}
+
 # Serverless / static hosts where throwaway redirect endpoints are spun up.
 GENERATED_SUFFIXES: Tuple[str, ...] = (
     "workers.dev", "pages.dev", "vercel.app", "netlify.app", "web.app",
@@ -159,6 +170,44 @@ def _query(url: str) -> Dict[str, str]:
         return {k.lower(): v for k, v in parse_qsl(urlsplit(url).query, keep_blank_values=True)}
     except ValueError:
         return {}
+
+
+def _authish_host(host: str) -> bool:
+    """``auth.example.com`` yes, ``example.com`` no - only subdomain labels."""
+    labels = [l for l in host.split(".") if l]
+    return any(l in AUTH_HOST_LABELS for l in labels[:-2])
+
+
+def is_stop_endpoint(url: str) -> bool:
+    """A credential-issuing endpoint that is itself the destination.
+
+    Nothing is hard-coded - no domain, no code - but the test is deliberately
+    narrow, because a match means "stop, fetch nothing more":
+
+    * an auth-ish subdomain (``auth.``, ``key.``, ``token.`` …) **or** an
+      auth-ish path segment (``/generate``, ``/auth/``, ``/activate`` …), and
+    * a credential in the query (``code=``, ``token=``, ``key=`` …).
+
+    Both halves are required, so ``shop.example.com/product?code=SUMMER20``,
+    ``example.com/verify?token=...`` and ``example.com/generate`` (no credential)
+    stay ordinary pages that the resolver may walk through.
+    """
+    u = normalize(url)
+    if not u:
+        return False
+    try:
+        parts = urlsplit(u)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+
+    q = _query(u)
+    if not any(k in q and str(q[k]).strip() for k in AUTH_PARAMS):
+        return False
+
+    segs = _segments(parts.path or "/")
+    auth_path = any(_EXT.sub("", s.lower()) in AUTH_SEGMENTS for s in segs)
+    return _authish_host(host) or auth_path
 
 
 def looks_blocked(*parts: str) -> str:

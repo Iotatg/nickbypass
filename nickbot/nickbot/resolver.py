@@ -208,6 +208,21 @@ class Engine:
                 log.info("[resolver] stop: %s", data["status"])
                 break
 
+            # Evidence that beats every other rule: the chain arrived at an
+            # endpoint that issues a credential. That is the destination, and
+            # nothing may be navigated from it - no browser pass, no next hop.
+            if hops.is_stop_endpoint(final):
+                trail.append({"hop": n, "url": cur, "next": final, "ok": True,
+                              "method": method, "action": "final",
+                              "score": 0, "why": "auth endpoint (destination)"})
+                data["hops"] = trail
+                data["final"] = final
+                data["status"] = "ok"
+                data["note"] = "Reached the auth endpoint - this is the destination"
+                log.info("[resolver] auth endpoint reached, stopping: %s", final)
+                log.info("[resolver] FINAL=%s", final)
+                break
+
             hint = hops.looks_like_waypoint(final, prev_url=cur)
 
             # It merely *looks* like a waypoint. One browser pass on the page
@@ -275,6 +290,19 @@ class Engine:
     async def _one_hop(self, url: str, allow: bool, force_browser: bool = False) -> Dict[str, Any]:
         """Resolve a single address: HTTP fast path, browser when it is needed."""
         t0 = time.perf_counter()
+
+        # A credential-issuing endpoint is the destination. Fetching it again -
+        # or handing it to a browser - is how the chain used to drift on to the
+        # ad page behind it.
+        if hops.is_stop_endpoint(url):
+            return {
+                "input": url, "final": url, "ok": True, "method": "endpoint",
+                "steps": [{"kind": "note", "url": url,
+                           "detail": "Auth endpoint - this is the destination"}],
+                "elapsed": 0.0, "note": "Reached the auth endpoint - this is the destination",
+                "blocked": "", "needs_browser": False,
+            }
+
         data = await self.fast.resolve(url)
         data["input"] = url
 

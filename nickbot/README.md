@@ -75,6 +75,14 @@ So shape is only a hint, and evidence decides:
 | the chain stops on a host the registry knows is a shortener | next hop — those exist to forward |
 | nothing to follow | **final**, however suspicious it looks |
 
+**One shape stops the chain outright: a credential endpoint.** A URL with an
+auth-ish host or path segment (`auth.`, `key.`, `token.`, `/generate`, `/auth/`,
+`/activate`) **and** a credential in the query (`code=`, `token=`, `key=`) hands
+you a key and is itself the destination — `auth.<anything>.workers.dev/generate?code=…`.
+Nothing is fetched past it and no browser is spent on it, because the "continue"
+link on those pages leads into the ad layer (`pipefitter.in/…`). Both halves are
+required, so `shop.example.com/product?code=SUMMER20` is still an ordinary page.
+
 When an answer merely *looks* like a waypoint, the browser gets one pass at the
 page that produced it, because gates often hand an HTTP client a decoy and a
 browser the real exit. Whatever is there after that is the answer — a browser
@@ -324,24 +332,24 @@ tests/
   test_offline.py  formatting, URL parsing, rate limit, DB, handler wiring
   test_registry.py 2,400+ domains: no dupes, lookup rules, terminal logic, speed
   test_remote.py   log tail/rotate, diagnostics, execv restart, owner gate
-  test_hops.py     waypoint hints, evidence-based decisions, the hop loop
+  test_hops.py     waypoint hints, evidence-based decisions, auth endpoints, the hop loop
 ```
 
 ## Tests
 
 ```bash
-python3 tests/test_gate.py       # 19 checks — CSRF handshake, countdown, decoy anchors
+python3 tests/test_gate.py       # 25 checks — CSRF handshake, countdown, decoy anchors, auth-endpoint stop
 python3 tests/test_fast.py       # 19 checks — fast path, site API, VPN wall, dead destination
 python3 tests/test_offline.py    # 61 checks — extraction, routing, rate limit, DB, copy, escaping
 python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer bounce
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 python3 tests/test_registry.py   # 52 checks — 2,400+ domains, lookup, terminal logic, speed
 python3 tests/test_remote.py     # 31 checks — /diag /restart /update /logs plumbing
-python3 tests/test_hops.py       # 68 checks — hints, decide(), hop loop, loop/hop budget
+python3 tests/test_hops.py       # 82 checks — hints, decide(), auth endpoints, hop loop
 ```
 
-285 checks, no network needed. The resolver engine has its own suite:
-`python3 ../linkresolver/tests/test_multihop.py` (27 checks, includes a parity
+305 checks, no network needed. The resolver engine has its own suite:
+`python3 ../linkresolver/tests/test_multihop.py` (35 checks, includes a parity
 test so the bot's classifier and the CLI's copy cannot drift).
 
 `test_gate.py` is the one that matters for the bug people hit: a local server

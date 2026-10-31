@@ -50,7 +50,21 @@ PAGE = """<!doctype html><html><head><title>Please Wait..</title></head>
 """
 
 
+AUTH_PAGE = """<!doctype html><html><head><title>Your Auth Key</title></head>
+<body>
+  <h1>Your Auth Key</h1>
+  <a href="/pipefitter/studyinsurances/">Continue</a>
+  <script>setTimeout(function(){ location.href = "/pipefitter/studyinsurances/"; }, 500);</script>
+</body></html>
+"""
+
+LANDING = """<!doctype html><html><head><title>Step 1</title>
+<meta http-equiv="refresh" content="0;url=/generate?code=ABC123XY"></head>
+<body><p>Preparing your key</p></body></html>
+"""
+
 FIRST_POST = {}
+HITS: list = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -65,6 +79,25 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        HITS.append(self.path)
+        if self.path.startswith("/jump"):
+            # A gate that redirects straight at the auth endpoint.
+            self.send_response(302)
+            self.send_header("Location", "/generate?code=ABC123XY")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path.startswith("/generate"):
+            # The auth endpoint itself. It carries a link to the ad page that
+            # used to be reported as the "real" destination.
+            self._send(200, AUTH_PAGE)
+            return
+        if self.path.startswith("/land"):
+            self._send(200, LANDING)
+            return
+        if self.path.startswith("/pipefitter"):
+            self._send(200, "<html><body><h1>Ad page</h1></body></html>")
+            return
         if self.path.startswith("/notimer"):
             self._send(200, PAGE_NO_TIMER, cookies=["gt_uc_=notimer; path=/"])
             return
@@ -182,6 +215,22 @@ async def main() -> int:
             G._is_gt = original
         check("resolved without a visible countdown", d2["ok"], d2.get("note", ""))
         check("same real destination", d2["final"] == REAL, d2["final"])
+
+        print("\n[2c] an auth endpoint is the destination, nothing is fetched past it")
+        HITS.clear()
+        d3 = await r.resolve(f"{BASE}/jump")
+        check("stopped on the auth endpoint", d3["final"] == f"{BASE}/generate?code=ABC123XY", d3["final"])
+        check("resolved", d3["ok"], d3.get("note", ""))
+        check("method is endpoint", d3["method"] == "endpoint", d3["method"])
+        check("the ad page behind it was never fetched",
+              not any("pipefitter" in h for h in HITS), HITS)
+
+        print("\n[2d] a page that points at one also stops there")
+        HITS.clear()
+        d4 = await r.resolve(f"{BASE}/land")
+        check("stopped on the auth endpoint", d4["final"] == f"{BASE}/generate?code=ABC123XY", d4["final"])
+        check("the ad page behind it was never fetched",
+              not any("pipefitter" in h for h in HITS), HITS)
     finally:
         await r.aclose()
         srv.shutdown()

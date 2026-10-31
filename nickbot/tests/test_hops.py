@@ -146,14 +146,55 @@ def main() -> int:
     check("single hop", len(out["hops"]) == 1, out.get("hops"))
     check("not marked as a loop", out.get("status") != "loop")
 
-    print("\n[6] HTTP decoy, browser gets the real exit")
+    print("\n[5b] an auth endpoint is a destination, and nothing is navigated from it")
+    check("the vplink destination is one", hops.is_stop_endpoint(AUTH) is True)
+    check("same shape, a different domain", hops.is_stop_endpoint(
+        "https://auth.otherkey.workers.dev/generate?code=ZZ99XX88YY") is True)
+    check("key endpoint", hops.is_stop_endpoint("https://key.example.com/activate?token=ab12cd34ef") is True)
+    check("no credential, not an endpoint", hops.is_stop_endpoint("https://example.com/generate") is False)
+    check("no auth shape, not an endpoint", hops.is_stop_endpoint(
+        "https://shop.example.com/product?code=SUMMER20") is False)
+    check("verify page is not one", hops.is_stop_endpoint(
+        "https://example.com/verify?token=AB12cd34EF56") is False)
+    check("the destination behind it is not one", hops.is_stop_endpoint(FINAL) is False)
+
+    # The chain reaches it and must not spend a browser pass, because a browser
+    # would follow the page's own "continue" link on to the ad layer.
+    calls = []
+
+    async def auth_hop(url, allow, force_browser=False):
+        calls.append((url, force_browser))
+        return {"final": AUTH, "ok": True, "method": "gate", "steps": [], "note": ""}
+
+    e._one_hop = auth_hop
+    out = asyncio.run(e._resolve_inner("https://vplink.in/nAKfh", True))
+    check("returned as the final URL", out["final"] == AUTH, out["final"])
+    check("marked ok", out["ok"] is True)
+    check("status ok", out.get("status") == "ok")
+    check("one hop", len(out["hops"]) == 1, out.get("hops"))
+    check("no browser pass on it", not any(f for _, f in calls), calls)
+
+    # Even a forced browser run must not fetch it.
+    class Boom:
+        async def resolve(self, url):
+            raise AssertionError(f"fetched {url}")
+
+    e.fast = Boom()
+    out = asyncio.run(Engine._one_hop(e, AUTH, True, force_browser=True))
+    check("_one_hop never fetches it", out["final"] == AUTH and out["ok"] is True, out)
+    check("method is endpoint", out["method"] == "endpoint", out.get("method"))
+
+    print("\n[6] HTTP decoy, browser gets the real exit (other link types)")
+    # A /go/ waypoint, not an auth endpoint: this is the case where the browser
+    # is still worth spending, because the gate feeds HTTP a decoy.
+    decoy_url = "https://gate.example.net/go/9f8e7d"
     seen_calls = []
 
     async def decoy(url, allow, force_browser=False):
         seen_calls.append((url, force_browser))
         if force_browser:
             return {"final": FINAL, "ok": True, "method": "browser", "steps": [], "note": ""}
-        return {"final": AUTH, "ok": True, "method": "http", "steps": [], "note": ""}
+        return {"final": decoy_url, "ok": True, "method": "http", "steps": [], "note": ""}
 
     e._one_hop = decoy
     out = asyncio.run(e._resolve_inner("https://vplink.in/nAKfh", True))

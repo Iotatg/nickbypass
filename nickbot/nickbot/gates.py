@@ -41,6 +41,8 @@ _HOME = Path(
 if str(_HOME) not in sys.path:
     sys.path.insert(0, str(_HOME))
 
+from . import hops  # noqa: E402  (credential endpoints are destinations)
+
 try:
     from linkresolver import normalize  # noqa: E402
     from linkresolver.rules import extract_next, host_of  # noqa: E402
@@ -327,6 +329,17 @@ class FastResolver:
             out["note"] = "Empty or invalid URL"
             return out
 
+        # An auth endpoint is the destination. Not fetched, not walked through:
+        # the pages that look like they follow it are the ad layer.
+        if hops.is_stop_endpoint(url):
+            out["final"] = url
+            out["ok"] = True
+            out["method"] = "endpoint"
+            out["note"] = "Reached the auth endpoint - this is the destination"
+            out["steps"].append({"kind": "note", "url": url,
+                                 "detail": "Auth endpoint, nothing to follow"})
+            return out
+
         steps: List[Dict[str, Any]] = out["steps"]
         start_host = host_of(url)
         cur = url
@@ -377,6 +390,14 @@ class FastResolver:
                     nxt = urljoin(cur, loc)
                     steps.append({"kind": "redirect", "url": cur, "status": resp.status_code,
                                   "detail": "HTTP redirect"})
+                    if hops.is_stop_endpoint(nxt):
+                        steps.append({"kind": "note", "url": nxt,
+                                      "detail": "Redirects to an auth endpoint - that is the destination"})
+                        out["final"] = nxt
+                        out["ok"] = True
+                        out["method"] = "endpoint"
+                        out["note"] = "Reached the auth endpoint - this is the destination"
+                        break
                     # The destination bounced us back into the ad layer: stop
                     # here and report the previous hop.
                     if host_of(nxt) in AD_HOSTS and _is_terminal(cur, start_host):
@@ -493,6 +514,14 @@ class FastResolver:
                             out["needs_browser"] = True
                             out["note"] = "The chain stopped on an ad page that never points anywhere real."
                             out["final"] = best_dest or cur
+                            break
+                        if hops.is_stop_endpoint(target):
+                            steps.append({"kind": "note", "url": target,
+                                          "detail": "Page points at an auth endpoint - that is the destination"})
+                            out["final"] = target
+                            out["ok"] = True
+                            out["method"] = "endpoint"
+                            out["note"] = "Reached the auth endpoint - this is the destination"
                             break
                         steps.append({"kind": "extract", "url": cur, "detail": detail or "Extracted next hop"})
                         if form:

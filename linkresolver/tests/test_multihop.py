@@ -101,14 +101,37 @@ def main() -> int:
     check("and is ok", out.ok is True)
     check("one pass only", out.note != "Maximum redirect hops reached (10)")
 
-    print("\n[4] HTTP decoy, browser gets the real exit")
+    print("\n[3b] an auth endpoint is final, and nothing is navigated from it")
+    r = Resolver(allow_browser=True, max_hops=10)
+    calls = []
+
+    def auth_once(url, force_browser=None):
+        calls.append((url, force_browser))
+        return result(url, AUTH, method="gate")
+
+    r._resolve_once = auth_once
+    out = r.resolve("https://vplink.in/nAKfh")
+    check("auth endpoint is the answer", out.final_url == AUTH, out.final_url)
+    check("reported ok", out.ok is True)
+    check("no browser pass was spent on it", not any(f for _, f in calls), calls)
+
+    # _resolve_once returns before it builds a client, so this touches no network.
+    r2 = Resolver(allow_browser=False)
+    out = r2._resolve_once(AUTH)
+    check("the CLI never fetches it", out.final_url == AUTH and out.ok is True, out.final_url)
+    check("method is endpoint", out.method == "endpoint", out.method)
+    check("says why", "auth endpoint" in out.note.lower(), out.note)
+
+    print("\n[4] HTTP decoy, browser gets the real exit (other link types)")
     seen = []
+
+    decoy_url = "https://gate.example.net/go/9f8e7d"
 
     def decoy(url, force_browser=None):
         seen.append((url, force_browser))
         if force_browser:
             return result(url, FINAL, method="browser")
-        return result(url, AUTH)
+        return result(url, decoy_url)
 
     r = Resolver(allow_browser=True, max_hops=10)
     r._resolve_once = decoy
@@ -179,6 +202,11 @@ def main() -> int:
               classify.looks_like_waypoint(AUTH).suspicious is True)
         check("...and both call it final when nothing follows",
               classify.decide(AUTH, known_gate=False).action == classify.FINAL)
+        check("both copies detect the auth endpoint",
+              classify.is_stop_endpoint(AUTH) is True and bot_hops.is_stop_endpoint(AUTH) is True)
+        check("both leave a coupon code alone",
+              classify.is_stop_endpoint("https://shop.example.com/product?code=SUMMER20") is False
+              and bot_hops.is_stop_endpoint("https://shop.example.com/product?code=SUMMER20") is False)
         check("both continue on a handed-over address",
               classify.decide(AUTH, next_url=FINAL, known_gate=False).action == classify.CONTINUE)
 

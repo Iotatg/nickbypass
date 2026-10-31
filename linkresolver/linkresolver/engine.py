@@ -116,6 +116,10 @@ class Resolver:
                 break
             nxt = res.final_url
             prev = cur
+            if classify.is_stop_endpoint(nxt):
+                res.steps.append(Step("note", nxt,
+                                      detail="Auth endpoint - final, nothing is navigated from it"))
+                break
             hint = classify.looks_like_waypoint(
                 nxt, prev_url=prev,
                 known_gate=R.matches(R.host_of(nxt), R.NEEDS_BROWSER | R.PLAIN_SHORTENERS),
@@ -181,6 +185,17 @@ class Resolver:
 
         if not url:
             res.note = "Empty URL"
+            return res
+
+        # A credential-issuing endpoint is the destination: nothing is fetched
+        # past it, because the pages that look like they follow are the ad layer.
+        if classify.is_stop_endpoint(url):
+            res.final_url = url
+            res.method = "endpoint"
+            res.ok = True
+            res.note = "Reached the auth endpoint - this is the destination"
+            res.steps.append(Step("note", url, detail="Auth endpoint, nothing to follow"))
+            res.elapsed = time.time() - t0
             return res
 
         force = self.force_browser if force_browser is None else force_browser
@@ -253,6 +268,14 @@ class Resolver:
                         res.note = "Redirect without a Location header"
                         break
                     res.steps.append(Step("redirect", nxt, status=resp.status_code, detail=f"HTTP {resp.status_code}"))
+                    if classify.is_stop_endpoint(nxt):
+                        res.steps.append(Step("note", nxt,
+                                              detail="Redirects to an auth endpoint - that is the destination"))
+                        res.final_url = nxt
+                        res.method = "endpoint"
+                        res.ok = True
+                        res.note = "Reached the auth endpoint - this is the destination"
+                        break
                     referer, url = url, nxt
                     continue
 
@@ -279,6 +302,14 @@ class Resolver:
                     nxt, why, _fields = found
                     nxt = normalize(nxt)
                     if nxt and nxt != url:
+                        if classify.is_stop_endpoint(nxt):
+                            res.steps.append(Step("note", nxt,
+                                                  detail="Page points at an auth endpoint - that is the destination"))
+                            res.final_url = nxt
+                            res.method = "endpoint"
+                            res.ok = True
+                            res.note = "Reached the auth endpoint - this is the destination"
+                            break
                         res.steps.append(Step("extract", nxt, detail=why))
                         referer, url = url, nxt
                         continue
