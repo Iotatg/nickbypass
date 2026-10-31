@@ -1,4 +1,4 @@
-"""数据结构：一次解析过程产生的每一步（hop / 提取 / 点击 / 备注）。"""
+"""Data structures: every step of one resolution (hop / extract / click / note)."""
 
 from __future__ import annotations
 

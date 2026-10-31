@@ -58,7 +58,8 @@ TLD_RE = re.compile(r"^[a-z]{2,24}$")
 TWO_LEVEL = {"co.in", "co.uk", "com.au", "co.nz", "com.br", "co.id", "com.pk",
              "com.bd", "com.np", "co.za", "com.ng", "com.my", "co.ke", "com.tr"}
 
-# 不是短链站，别塞进来：文件托管 / 大厂 / 广告网络 / 学校政府
+# Not shorteners, keep them out: file hosts / big tech / ad networks /
+# schools and government sites
 DENY = (
     "blogspot.", "google.", "googleusercontent.", "gstatic.", "cloudflare.",
     "cloudfront.", "a-ads.com", "doubleclick.", "googlesyndication.",

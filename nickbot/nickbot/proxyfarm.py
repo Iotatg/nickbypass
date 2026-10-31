@@ -38,9 +38,9 @@ from urllib.parse import urlsplit
 
 import httpx
 
-# ---------------------------------------------------------------- 数据源
+# ---------------------------------------------------------------- sources
 
-# {cc} = 两位国家码（IN / BD / PK / NP …）
+# {cc} = two-letter country code (IN / BD / PK / NP ...)
 SOURCES: Tuple[Tuple[str, str], ...] = (
     ("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&country={cc}&timeout=10000&ssl=yes&anonymity=all", "plain:http"),
     ("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&country={cc}&timeout=10000&ssl=no", "plain:socks4"),
@@ -51,7 +51,7 @@ SOURCES: Tuple[Tuple[str, str], ...] = (
     ("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", "plain:socks5"),
 )
 
-# 免费公共列表里最常见的垃圾端口，先剔掉省时间
+# Junk ports that show up in every free list: drop them early to save time
 JUNK_PORTS = {0, 1, 22, 25, 110, 143, 443, 465, 587, 993, 995, 3306, 3389, 5432, 6379}
 
 PRIVATE_PREFIXES = ("10.", "127.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
@@ -62,7 +62,8 @@ WALL_MARKERS = (
     "use a residential", "datacenter ip", "access denied", "not available in your country",
 )
 
-# 机房 / 云厂商 ASN 关键词：这类 IP 会被短链站直接 403（实测 DigitalOcean 印度节点也 403）
+# Datacenter / cloud ASN keywords: these get a straight 403 from gate sites
+# (measured: a DigitalOcean Mumbai node is refused too)
 HOSTING_HINTS = (
     "digitalocean", "amazon", "aws", "google", "microsoft", "azure", "linode", "akamai",
     "vultr", "contabo", "hetzner", "ovh", "oracle", "alibaba", "aliyun", "tencent",
@@ -72,7 +73,8 @@ HOSTING_HINTS = (
     "upcloud", "kamatera", "ionos", "godaddy", "namecheap", "hostwinds", "bandwagon",
 )
 
-# 印度本地宽带 / 移动运营商：这类出口才可能通过短链站的住宅 IP 校验
+# Local broadband / mobile carriers: only these exits can pass a gate that
+# checks for a residential IP
 RESIDENTIAL_HINTS = (
     "jio", "reliance", "airtel", "bharti", "vodafone", "idea", "bsnl", "mtnl",
     "act fibernet", "atria", "hathway", "excitel", "tikona", "gtpl", "kerala vision",
@@ -91,7 +93,7 @@ def is_hosting(isp: str) -> bool:
 
 
 def is_residential(isp: str) -> bool:
-    """粗判：不是云厂商 ASN，且像本地运营商/宽带。"""
+    """Rough call: not a cloud ASN, and looks like a local carrier / broadband line."""
     low = (isp or "").lower()
     if not low:
         return False
@@ -110,10 +112,10 @@ GEO_URLS = (
 _LINE_RE = re.compile(r"^(?:(?P<scheme>https?|socks[45])://)?(?P<host>\d{1,3}(?:\.\d{1,3}){3}):(?P<port>\d{2,5})$")
 
 
-# ---------------------------------------------------------------- 工具函数
+# ------------------------------------------------------------------- helpers
 
 def norm_proxy(raw: str, default_scheme: str = "http") -> Optional[str]:
-    """把 '1.2.3.4:8080' / 'socks5://1.2.3.4:1080' 统一成带 scheme 的 URL。"""
+    """Normalise '1.2.3.4:8080' / 'socks5://1.2.3.4:1080' into a URL with a scheme."""
     s = (raw or "").strip().strip(",;\"'")
     if not s:
         return None
@@ -153,7 +155,7 @@ def _host_of(url: str) -> str:
 
 
 async def _bounded(coro, timeout: float):
-    """硬超时。SOCKS 握手的读等待有时不受 httpx timeout 约束，必须在外层再套一层。"""
+    """Hard timeout. A SOCKS handshake can outlive the httpx timeout, so wrap it."""
     try:
         return await asyncio.wait_for(coro, timeout=max(0.5, timeout))
     except Exception:
@@ -161,7 +163,7 @@ async def _bounded(coro, timeout: float):
 
 
 class Farm:
-    """按国家维护的可用出口 IP 池（默认印度）。"""
+    """A pool of working exit IPs for one country (India by default)."""
 
     def __init__(
         self,
@@ -183,7 +185,7 @@ class Farm:
         self.last_report: Dict[str, Any] = {}
         self._load()
 
-    # ------------------------------------------------------------ 持久化
+    # -------------------------------------------------------------- persistence
 
     def _load(self) -> None:
         try:
@@ -203,7 +205,7 @@ class Farm:
         except Exception:
             pass
 
-    # ------------------------------------------------------------ 抓取
+    # --------------------------------------------------------------- harvesting
 
     async def harvest(self, limit: int = 220) -> List[str]:
         found: List[str] = []
@@ -226,16 +228,17 @@ class Farm:
         async with httpx.AsyncClient(follow_redirects=True, verify=False) as c:
             await asyncio.gather(*(one(c, tpl, kind) for tpl, kind in SOURCES))
 
-        # 去重；已知可用的排前面
+        # de-duplicate; known-good entries first
         known = [p for p in self._db if self._db[p].get("ok")]
         rest = [p for p in dict.fromkeys(found) if p not in self._db]
         random.shuffle(rest)
         return (known + rest)[:limit]
 
-    # ------------------------------------------------------------ 校验
+    # ------------------------------------------------------------ verification
 
     async def _exit_ip(self, proxy: str, timeout: float) -> Optional[str]:
-        """通过代理问「我的出口 IP 是多少」。只取 IP，国家稍后批量查，省掉每代理一次查询。"""
+        """Ask the proxy "what is my exit IP?". IP only - the country is looked up in
+        one batch later instead of one request per proxy."""
         for url in GEO_URLS:
             try:
                 async with httpx.AsyncClient(proxy=proxy, verify=False,
@@ -258,7 +261,8 @@ class Farm:
         return None
 
     async def _batch_geo(self, ips: List[str]) -> Dict[str, Dict[str, Any]]:
-        """本地批量查国家（ip-api batch，100 个/次，不经过代理，快且准）。"""
+        """Batch country lookup from the box itself (ip-api batch, 100 per call, no
+        proxy involved - fast and accurate)."""
         out: Dict[str, Dict[str, Any]] = {}
         uniq = list(dict.fromkeys([i for i in ips if i]))
         async with httpx.AsyncClient(timeout=12) as c:
@@ -299,7 +303,7 @@ class Farm:
         except Exception:
             return False
 
-    # ------------------------------------------------------------ 刷新
+    # --------------------------------------------------------------- refresh
 
     async def refresh(
         self,
@@ -309,13 +313,13 @@ class Farm:
         workers: int = 45,
         geo_only: bool = False,
     ) -> Dict[str, Any]:
-        """抓取 → 出口 IP → 国家校验 →（可选）站点校验，结果写回磁盘。"""
+        """Harvest -> exit IP -> country check -> (optional) site check, saved to disk."""
         if self._refreshing:
             return {"skipped": "already running"}
         self._refreshing = True
         t0 = time.perf_counter()
         try:
-            # limit=0 -> 不抓新货，只对现有池做站点复检
+            # limit=0 -> harvest nothing, just re-test the existing pool
             cands = await self.harvest(limit=limit) if limit > 0 else self._ranked()
             sem = asyncio.Semaphore(workers)
             deadline = time.perf_counter() + budget
@@ -333,12 +337,12 @@ class Farm:
                         ips[px] = ip
                         lat[px] = int((time.perf_counter() - t) * 1000)
 
-            # 阶段一：并发问出口 IP（这一步就能刷掉 80% 死代理）
+            # phase 1: ask every candidate for its exit IP (this kills 80% of dead proxies)
             verified: List[str] = []
             if limit > 0:
                 await _bounded(asyncio.gather(*(grab(p) for p in cands)), budget + 5)
 
-                # 阶段二：本地批量查国家
+                # phase 2: batch country lookup locally
                 geo = await self._batch_geo(list(ips.values())) if ips else {}
                 for px, ip in ips.items():
                     g = geo.get(ip) or {}
@@ -353,10 +357,10 @@ class Farm:
                                     "checked": int(time.time())}
                     verified.append(px)
             else:
-                # 只复检现有池，不重新抓、不重新查国家
+                # re-test the existing pool only: no harvest, no country lookup
                 verified = self._ranked()
 
-            # 阶段三：站点校验（只对真·本地 IP 做）
+            # phase 3: site check (real local IPs only)
             site_ok = 0
             if target and not geo_only and verified:
                 site_deadline = time.perf_counter() + max(6.0, budget - (time.perf_counter() - t0))
@@ -376,7 +380,7 @@ class Farm:
 
                 await _bounded(asyncio.gather(*(probe(p) for p in verified)), 40)
 
-            # 清理：过期 + 超量
+            # cleanup: expired entries + overflow
             now = time.time()
             for p in [p for p, v in self._db.items()
                       if now - float(v.get("checked", 0)) > self.ttl * 4]:
@@ -403,7 +407,7 @@ class Farm:
         finally:
             self._refreshing = False
 
-    # ------------------------------------------------------------ 对外
+    # -------------------------------------------------------------------- public
 
     def _ranked(self, exclude: Optional[Iterable[str]] = None) -> List[str]:
         skip = set(exclude or ())
@@ -418,7 +422,8 @@ class Farm:
                        exclude: Optional[Iterable[str]] = None,
                        workers: int = 12,
                        allow_refresh: bool = False) -> Optional[str]:
-        """返回第一个真能打开 url 的本地出口代理。池空时默认不刷新（不拖慢请求）。"""
+        """Return the first local exit that really opens ``url``. An empty pool does not
+        trigger a refresh here - that would slow the request down."""
         host = _host_of(url)
         hit = self._by_host.get(host)
         if hit and time.time() - hit[0] < 300 and hit[1] not in set(exclude or ()):
@@ -491,7 +496,8 @@ class Farm:
         return False
 
     def drop(self, proxy: str) -> None:
-        """探测失败时调用：保留记录但降级，连续失败就丢掉。"""
+        """Called when a probe fails: keep the record but demote it; repeated failures
+        drop it entirely."""
         self._by_host = {h: v for h, v in self._by_host.items() if v[1] != proxy}
         rec = self._db.get(proxy)
         if not rec:

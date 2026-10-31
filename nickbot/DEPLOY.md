@@ -26,11 +26,29 @@ If it can reach `api.telegram.org`, it runs.
 
 **c) Never paste the token anywhere public.** If it leaks, `/revoke` in BotFather immediately and put the new one in `.env`.
 
+**d) Optional: Kurigram credentials.** The bot can run on MTProto (Kurigram)
+instead of the HTTP Bot API. It needs an app pair on top of the bot token:
+
+1. Open <https://my.telegram.org> and log in with your own number.
+2. *API development tools* → create an app (any name, platform "Desktop").
+3. Copy `api_id` (a number) and `api_hash` (32 hex characters).
+
+Kurigram is optional: leave the fields empty and the bot uses
+python-telegram-bot, which only needs the token.
+
 Your `.env` needs at minimum:
 
 ```ini
 BOT_TOKEN=123456:AAH...
 OWNER_ID=123456789
+```
+
+Add these two lines only if you want Kurigram:
+
+```ini
+BACKEND=kurigram
+API_ID=1234567
+API_HASH=0123456789abcdef0123456789abcdef
 ```
 
 Everything else has a sane default. Full list with explanations is in
@@ -45,12 +63,17 @@ python -m nickbot --check
 ```
 Config check
   token      : set (123456…hDfY)
+  api id     : missing (Kurigram only)
+  api hash   : missing (Kurigram only)
+  backend    : auto -> ptb
   owner      : [123456789]
   problems   : none
 
 Environment
   python     : 3.12.4 · aarch64 · Linux
-  browser    : not installed — HTTP path only
+  backend    : python-telegram-bot
+  http/2     : on (h2 installed)
+  browser    : not installed - HTTP path only
   allow_browser=false · proxy_farm=false (IN) · proxy=none
 ```
 

@@ -23,7 +23,7 @@ class Req(BaseModel):
 @app.post("/api/resolve")
 async def api_resolve(req: Req):
     if not normalize(req.url):
-        return JSONResponse({"ok": False, "note": "请输入链接", "steps": [], "final": ""}, status_code=400)
+        return JSONResponse({"ok": False, "note": "Please paste a link", "steps": [], "final": ""}, status_code=400)
 
     def work():
         return Resolver(timeout=req.timeout, allow_browser=req.browser).resolve(req.url).to_dict()
@@ -47,7 +47,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Link Resolver · 短链 / 广告门解析</title>
+<title>Link Resolver · short links and ad gates</title>
 <style>
   :root{
     --bg:#0a0c10; --panel:#11151d; --panel2:#161b25; --line:#232a36;
@@ -114,26 +114,26 @@ PAGE = r"""<!doctype html>
 <body>
 <div class="wrap">
   <h1>Link <span>Resolver</span></h1>
-  <div class="sub">短链 → 广告门 → 真实终点。HTTP 快路径优先，卡住就上 Chromium 点掉倒计时。</div>
+  <div class="sub">Short link → ad gate → real destination. HTTP fast path first; Chromium clicks out the countdown when it gets stuck.</div>
 
   <div class="card">
     <div class="row">
-      <input id="u" type="text" placeholder="粘贴短链，例如 https://tinyurl.com/xxxx 或 https://gplinks.co/xxxx" autocomplete="off" spellcheck="false">
-      <button id="go">解析</button>
+      <input id="u" type="text" placeholder="Paste a short link, e.g. https://tinyurl.com/xxxx or https://gplinks.co/xxxx" autocomplete="off" spellcheck="false">
+      <button id="go">Resolve</button>
     </div>
     <div class="opts">
-      <label class="switch"><input type="checkbox" id="browser" checked> 浏览器模式（慢但能过 JS 广告门）</label>
+      <label class="switch"><input type="checkbox" id="browser" checked> Browser mode (slower, but it passes JS gates)</label>
       <span>·</span>
-      <span>支持一次粘贴多个链接？用 CLI：<code>python -m linkresolver url1 url2</code></span>
+      <span>Several links at once? Use the CLI: <code>python -m linkresolver url1 url2</code></span>
     </div>
   </div>
 
-  <div id="out"><div class="empty">还没有解析结果</div></div>
+  <div id="out"><div class="empty">No results yet</div></div>
 
   <div class="note">
-    <b>说明</b>：本工具只做「展开跳转链」——顺着服务器返回的 30x、meta refresh、JS location、base64 参数、
-    表单提交，一路走到终点；需要交互的页面用无头 Chromium 点「继续」。
-    遇到 Cloudflare 人机验证、登录墙、地区限制时它会如实告诉你卡在哪，而不是编一个链接给你。
+    <b>What it does</b>: it only unwraps the redirect chain - following 30x responses, meta refresh, JS location, base64 parameters,
+    and form posts until it reaches the destination. Pages that need interaction are clicked through in headless Chromium.
+    When it hits Cloudflare, a login wall or a region block it tells you where it stopped instead of inventing a link.
   </div>
 </div>
 
@@ -142,21 +142,21 @@ const $ = s => document.querySelector(s);
 const out = $('#out'), btn = $('#go'), inp = $('#u');
 let t0 = 0, timer = null;
 
-const TAG = {request:'GET',redirect:'→',extract:'解出',click:'点击',note:'备注',blocked:'拦截',error:'错误'};
+const TAG = {request:'GET',redirect:'→',extract:'EXTRACT',click:'CLICK',note:'NOTE',blocked:'BLOCKED',error:'ERROR'};
 
 function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
 function tick(){
   const s = ((Date.now()-t0)/1000).toFixed(1);
-  $('#loading') && ($('#loading').textContent = `解析中 ${s}s …`);
+  $('#loading') && ($('#loading').textContent = `Resolving ${s}s …`);
 }
 
 async function go(){
   const url = inp.value.trim();
   if(!url) { inp.focus(); return; }
   btn.disabled = true; t0 = Date.now();
-  out.innerHTML = `<div class="final"><span class="spin"></span><span id="loading">解析中 0.0s …</span>
-      <div class="meta">浏览器模式要等倒计时，通常 5–25 秒</div></div>`;
+  out.innerHTML = `<div class="final"><span class="spin"></span><span id="loading">Resolving 0.0s …</span>
+      <div class="meta">Browser mode waits out the countdown, usually 5-25 seconds</div></div>`;
   timer = setInterval(tick, 100);
   try{
     const r = await fetch('/api/resolve', {
@@ -166,28 +166,28 @@ async function go(){
     const d = await r.json();
     render(d);
   }catch(e){
-    out.innerHTML = `<div class="final"><span class="badge err">失败</span><div class="url">${esc(e.message)}</div></div>`;
+    out.innerHTML = `<div class="final"><span class="badge err">Failed</span><div class="url">${esc(e.message)}</div></div>`;
   }finally{
     clearInterval(timer); btn.disabled = false;
   }
 }
 
 function render(d){
-  const okBadge = d.ok ? `<span class="badge ok">已到终点</span>`
-                : (d.blocked ? `<span class="badge err">被拦截</span>` : `<span class="badge warn">未到达</span>`);
-  const method = {http:'HTTP 快路径', browser:'浏览器模式', rules:'规则命中'}[d.method] || d.method || '—';
+  const okBadge = d.ok ? `<span class="badge ok">Destination reached</span>`
+                : (d.blocked ? `<span class="badge err">Blocked</span>` : `<span class="badge warn">Not reached</span>`);
+  const method = {http:'HTTP fast path', browser:'browser mode', rules:'rule match'}[d.method] || d.method || '—';
   let html = `<div class="final">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
       <div style="min-width:0">
         <span class="badge">${esc(method)}</span>${okBadge}
         <div class="url">${d.final ? `<a href="${esc(d.final)}" target="_blank" rel="noreferrer noopener">${esc(d.final)}</a>` : '—'}</div>
-        <div class="meta">${esc(d.note||'')} · 耗时 ${d.elapsed}s</div>
+        <div class="meta">${esc(d.note||'')} · took ${d.elapsed}s</div>
       </div>
-      ${d.final ? `<button class="copy" onclick="navigator.clipboard.writeText(${JSON.stringify(d.final)});this.textContent='已复制'">复制</button>` : ''}
+      ${d.final ? `<button class="copy" onclick="navigator.clipboard.writeText(${JSON.stringify(d.final)});this.textContent='Copied'">Copy</button>` : ''}
     </div></div>`;
 
   if(d.steps && d.steps.length){
-    html += `<div class="trace"><h3>跳转轨迹 · ${d.steps.length} 步</h3>`;
+    html += `<div class="trace"><h3>Trace · ${d.steps.length} steps</h3>`;
     d.steps.forEach(s=>{
       const st = [s.status?('HTTP '+s.status):'', s.elapsed?`${s.elapsed}s`:''].filter(Boolean).join(' · ');
       html += `<div class="step k-${s.kind}">

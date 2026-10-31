@@ -1,11 +1,14 @@
-"""提取规则：从 HTML / 参数里找出"下一跳"。
+"""Extraction rules: find the next hop inside HTML / query parameters.
 
-分三层：
-1. 站点专用规则（SITE_RULES）：域名匹配 -> 专用解码
-2. 通用提取器（GENERIC）：meta refresh / JS location / 内联 JSON / base64 参数 / 表单自动提交 / continue 按钮
-3. 域名知识表（NEEDS_BROWSER / HINTS）：哪些站必须上浏览器、以及给用户的提示
+Three layers:
+1. Site rules (SITE_RULES): host match -> bespoke decoder
+2. Generic extractors (GENERIC): meta refresh / JS location / inline JSON /
+   base64 parameters / auto-submitted forms / continue buttons
+3. Domain knowledge (NEEDS_BROWSER / HINTS): which sites need a browser, and
+   what to tell the user about them
 
-所有规则都是"读页面、找下一跳"，不发任何请求——请求由 engine 统一发。
+Every rule only reads a page and looks for the next hop; it never sends a
+request. Requests belong to the engine.
 """
 
 from __future__ import annotations
@@ -24,9 +27,10 @@ except Exception:  # pragma: no cover
     BeautifulSoup = None  # type: ignore
 
 
-# ---------------------------------------------------------------- 域名知识表
+# ------------------------------------------------------------ domain knowledge
 
-# 这些站点靠 JS 计时 + 动态 token + 弹窗，纯 HTTP 拿不到终点，必须走浏览器
+# These sites rely on JS timers, dynamic tokens and popups; plain HTTP never
+# reaches the destination, so they need a browser.
 NEEDS_BROWSER = {
     "linkvertise.com", "link-to.net", "linkvertise.net",
     "ouo.io", "ouo.press",
@@ -40,7 +44,7 @@ NEEDS_BROWSER = {
     "earn4link.in", "openurl.co", "websiteplanet.com",
 }
 
-# 纯跳转型短链（无广告门），HTTP 一跳就够
+# Plain redirect shorteners (no ad gate): one HTTP hop is enough.
 PLAIN_SHORTENERS = {
     "bit.ly", "bitly.com", "tinyurl.com", "t.co", "goo.gl", "is.gd", "v.gd",
     "cutt.ly", "rebrand.ly", "shorturl.at", "s.id", "srt.am", "t.ly",
@@ -50,15 +54,15 @@ PLAIN_SHORTENERS = {
 }
 
 HINTS = {
-    "linkvertise.com": "Linkvertise：有 3 秒倒计时 + 弹窗 + 动态 token，需浏览器模式",
-    "ouo.io": "ouo.io：表单 + reCAPTCHA，纯 HTTP 只能拿到中间页",
-    "gplinks.co": "GPLinks：POST /links/go + 动态 ad_form_data，需浏览器模式",
-    "adfoc.us": "adfoc.us：JS 计时，需浏览器模式",
-    "adf.ly": "adf.ly：ysmm 变量可静态解出终点",
+    "linkvertise.com": "Linkvertise: 3s countdown + popups + a dynamic token, needs browser mode",
+    "ouo.io": "ouo.io: form + reCAPTCHA, plain HTTP only gets the intermediate page",
+    "gplinks.co": "GPLinks: POST /links/go + dynamic ad_form_data, needs browser mode",
+    "adfoc.us": "adfoc.us: JS timer, needs browser mode",
+    "adf.ly": "adf.ly: the ysmm variable can be decoded without a browser",
 }
 
 
-# ---------------------------------------------------------------- 工具函数
+# ------------------------------------------------------------------- helpers
 
 def host_of(url: str) -> str:
     try:
@@ -78,7 +82,7 @@ def matches(host: str, domains) -> bool:
 
 
 def b64decode_any(s: str) -> Optional[str]:
-    """尽力解 base64（含 urlsafe / 缺 padding / 双重编码）。"""
+    """Best-effort base64 decode (urlsafe / missing padding / double-encoded)."""
     if not s:
         return None
     s = htmlmod.unescape(s.strip())
@@ -115,7 +119,7 @@ def _abs(base: str, cand: str) -> Optional[str]:
 
 
 def _looks_like_target(url: str, base: str) -> bool:
-    """过滤掉明显不是终点的东西（同站首页、静态资源、JS 文件）。"""
+    """Drop things that are obviously not a destination (same-site home, assets, JS files)."""
     if not url:
         return False
     if re.search(r"\.(js|css|png|jpe?g|gif|svg|woff2?|ico|mp4)(\?|$)", url, re.I):
@@ -125,7 +129,7 @@ def _looks_like_target(url: str, base: str) -> bool:
     return True
 
 
-# ---------------------------------------------------------------- 站点规则
+# ----------------------------------------------------------------- site rules
 
 @dataclass
 class Ctx:
@@ -148,7 +152,7 @@ class Ctx:
 
 
 def rule_adfly(ctx: Ctx) -> Optional[Tuple[str, str]]:
-    """adf.ly / j.gs / q.gs：ysmm 变量 + 奇偶拆位 + base64。"""
+    """adf.ly / j.gs / q.gs: ysmm variable + odd/even split + base64."""
     m = re.search(r"ysmm\s*=\s*['\"]([^'\"]+)['\"]", ctx.html)
     if not m:
         return None
@@ -163,11 +167,11 @@ def rule_adfly(ctx: Ctx) -> Optional[Tuple[str, str]]:
     idx = decoded.find("http")
     if idx < 0:
         return None
-    return decoded[idx:], "adf.ly ysmm 解码"
+    return decoded[idx:], "adf.ly ysmm decoded"
 
 
 def rule_b64_param(ctx: Ctx) -> Optional[Tuple[str, str]]:
-    """?url= / ?r= / ?s= / ?id= 等参数里塞 base64 的老套路（大量 safelink 用）。"""
+    """The old ?url= / ?r= / ?s= / ?id= base64 trick that most safelinks use."""
     for key in ("url", "u", "r", "s", "id", "go", "to", "link", "target", "dest", "redirect", "q"):
         raw = ctx.param(key)
         if not raw:
@@ -176,7 +180,7 @@ def rule_b64_param(ctx: Ctx) -> Optional[Tuple[str, str]]:
         if dec:
             nxt = _abs(ctx.url, dec)
             if nxt and _looks_like_target(nxt, ctx.url):
-                return nxt, f"?{key}= base64 解码"
+                return nxt, f"?{key}= base64 decoded"
     return None
 
 
@@ -195,7 +199,7 @@ def rule_google_redirect(ctx: Ctx) -> Optional[Tuple[str, str]]:
         for key in ("q", "url"):
             v = ctx.param(key)
             if v and v.startswith("http"):
-                return v, "google /url 重定向"
+                return v, "google /url redirect"
     return None
 
 
@@ -206,7 +210,7 @@ SITE_RULES = [
 ]
 
 
-# ---------------------------------------------------------------- 通用提取器
+# ---------------------------------------------------------- generic extractors
 
 _META_RE = re.compile(
     r"<meta[^>]+http-equiv\s*=\s*['\"]?refresh['\"]?[^>]*content\s*=\s*['\"]([^'\"]+)['\"]", re.I
@@ -229,7 +233,7 @@ _JSON_URL_RE = re.compile(
 
 _CONTINUE_TEXT = re.compile(
     r"(continue|get\s*link|proceed|skip\s*ad|click\s*here|download|verify|"
-    r"i'?m\s*not\s*a\s*robot|go\s*to\s*link|获取|继续|跳过)",
+    r"i'?m\s*not\s*a\s*robot|go\s*to\s*link|get\s*it|continue|skip)",
     re.I,
 )
 
@@ -250,19 +254,19 @@ def extract_js(html: str) -> Optional[Tuple[str, str]]:
         for m in re.finditer(pat, html):
             cand = m.group(1)
             if cand and ("http" in cand or cand.startswith("/")):
-                return cand, f"JS location 跳转 (pattern {i + 1})"
+                return cand, f"JS location redirect (pattern {i + 1})"
     return None
 
 
 def extract_json(html: str) -> Optional[Tuple[str, str]]:
     m = _JSON_URL_RE.search(html)
     if m:
-        return m.group(1), "内联 JSON 里的 url 字段"
+        return m.group(1), "url field in inline JSON"
     return None
 
 
 def extract_anchor(html: str, base: str) -> Optional[Tuple[str, str]]:
-    """页面上的"继续 / 直达"按钮直接带目标地址的情况（含 v.gd 这类中间页）。"""
+    """A continue / go button that already carries the destination (v.gd style pages)."""
     if BeautifulSoup is None:
         return None
     soup = BeautifulSoup(html, "html.parser")
@@ -277,16 +281,16 @@ def extract_anchor(html: str, base: str) -> Optional[Tuple[str, str]]:
             continue
         hit = (
             bool(_CONTINUE_TEXT.search(label))
-            or label.startswith("http")           # 直接把终点 URL 当按钮文字
+            or label.startswith("http")           # destination URL used as the button label
             or bool(re.search(r"(biglink|big-link|btn|button|continue|direct|goto)", cls, re.I))
         )
         if hit and _looks_like_target(href, base):
-            return href, f"页面按钮「{label or cls.strip() or 'continue'}」直达终点"
+            return href, f"Page button \"{label or cls.strip() or 'continue'}\" points at the destination"
     return None
 
 
 def extract_form(html: str, base: str) -> Optional[Tuple[str, str, Dict[str, str]]]:
-    """表单自动提交：返回 (action, detail, fields)。"""
+    """Auto-submitted form: returns (action, detail, fields)."""
     if BeautifulSoup is None:
         return None
     soup = BeautifulSoup(html, "html.parser")
@@ -294,7 +298,7 @@ def extract_form(html: str, base: str) -> Optional[Tuple[str, str, Dict[str, str
         action = form.get("action") or ""
         method = (form.get("method") or "get").lower()
         if method != "get":
-            continue  # POST 表单交给浏览器模式，避免瞎猜 token
+            continue  # POST forms go to browser mode; guessing tokens there is a waste of time
         fields: Dict[str, str] = {}
         for inp in form.find_all("input"):
             name = inp.get("name")
@@ -303,14 +307,14 @@ def extract_form(html: str, base: str) -> Optional[Tuple[str, str, Dict[str, str
             fields[name] = inp.get("value") or ""
         joined = " ".join(fields.values())
         if any(v.startswith("http") for v in fields.values()) or re.search(r"https?://", joined):
-            return up.urljoin(base, action or base), "GET 表单自动提交", fields
+            return up.urljoin(base, action or base), "GET form auto-submitted", fields
     return None
 
 
-# ---------------------------------------------------------------- 总入口
+# ---------------------------------------------------------------- entry point
 
 def extract_next(url: str, html: str) -> Optional[Tuple[str, str, Optional[Dict[str, str]]]]:
-    """返回 (下一跳 URL, 说明, 表单字段|None)。"""
+    """Returns (next hop URL, explanation, form fields | None)."""
     host = host_of(url)
     params = up.parse_qs(up.urlsplit(url).query)
     soup = BeautifulSoup(html, "html.parser") if BeautifulSoup else None
@@ -334,7 +338,7 @@ def extract_next(url: str, html: str) -> Optional[Tuple[str, str, Optional[Dict[
     if cand:
         nxt = _abs(url, cand)
         if nxt and _looks_like_target(nxt, url):
-            return nxt, "meta refresh 跳转", None
+            return nxt, "meta refresh redirect", None
 
     got = extract_js(html)
     if got:

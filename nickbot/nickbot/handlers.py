@@ -1,4 +1,9 @@
-"""Command & message handlers."""
+"""Command and message handlers.
+
+Nothing in this file imports a Telegram framework: it works on ``Event``
+objects from ``transport.py``, so the same code runs on python-telegram-bot
+and on Kurigram.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +14,6 @@ import uuid
 from collections import OrderedDict, deque
 from typing import Deque, Dict, List, Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
-from telegram.constants import ChatAction, ParseMode
-from telegram.ext import ContextTypes
-
 import httpx
 
 from . import format as F
@@ -20,10 +21,10 @@ from . import sites
 from .config import Config, set_env_value
 from .db import DB
 from .resolver import Engine
+from .transport import Event, Sent
 
 URL_RE = re.compile(r"https?://[^\s<>\"'）)\]]+", re.I)
 BARE_RE = re.compile(r"(?<![\w@.])((?:[a-z0-9-]+\.)+[a-z]{2,}/[^\s<>\"'）)\]]*)", re.I)
-NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 TRIM = ".,;:!?\"'）)】」』》。，、；：！？"
 
@@ -98,33 +99,29 @@ class Runtime:
         return self._traces.get(key)
 
 
-def rt(context: ContextTypes.DEFAULT_TYPE) -> Runtime:
-    return context.application.bot_data["rt"]
+def rt(ev: Event) -> Runtime:
+    return ev.rt
 
 
-async def _guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    u = update.effective_user
-    if not u:
+async def _guard(ev: Event) -> bool:
+    if not ev.uid:
         return False
-    r = rt(context)
-    if r.db.is_banned(u.id):
+    r = ev.rt
+    if r.db.is_banned(ev.uid):
         return False
-    r.db.touch_user(u.id, u.username or "", u.first_name or "")
+    r.db.touch_user(ev.uid, ev.username, ev.first_name)
     return True
 
 
 def owner_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        u = update.effective_user
-        if not u or not rt(context).cfg.is_owner(u.id):
-            if update.effective_message:
-                await update.effective_message.reply_text(
-                    "🔒 That one's for the owner only.\n"
-                    "<i>Send a link instead — I'll take care of it.</i>",
-                    parse_mode=ParseMode.HTML,
-                )
+    async def wrapper(ev: Event):
+        if not ev.uid or not ev.rt.cfg.is_owner(ev.uid):
+            await ev.reply(
+                "🔒 That one is for the owner only.\n"
+                "<i>Send a link instead — I'll take care of it.</i>"
+            )
             return
-        return await func(update, context)
+        return await func(ev)
 
     wrapper.__name__ = func.__name__
     return wrapper
@@ -132,74 +129,63 @@ def owner_only(func):
 
 # ------------------------------------------------------------------ commands
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update, context):
+async def cmd_start(ev: Event) -> None:
+    if not await _guard(ev):
         return
-    u = update.effective_user
-    r = rt(context)
-    await update.effective_message.reply_text(
-        F.help_text(r.cfg.is_owner(u.id)),
-        parse_mode=ParseMode.HTML,
-        link_preview_options=NO_PREVIEW,
+    await ev.reply(F.help_text(ev.rt.cfg.is_owner(ev.uid)))
+
+
+async def cmd_help(ev: Event) -> None:
+    await cmd_start(ev)
+
+
+async def cmd_id(ev: Event) -> None:
+    await ev.reply(
+        f"👤 You: <code>{ev.uid}</code>\n💬 This chat: <code>{ev.chat_id}</code>\n\n"
+        "<i>Handy when you are setting the logger chat or adding yourself as owner.</i>"
     )
 
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await cmd_start(update, context)
-
-
-async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    u = update.effective_user
-    c = update.effective_chat
-    await update.effective_message.reply_text(
-        f"👤 You: <code>{u.id}</code>\n💬 This chat: <code>{c.id}</code>\n\n"
-        "<i>Handy if you're setting up the logger chat or adding yourself as owner.</i>",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update, context):
+async def cmd_mode(ev: Event) -> None:
+    if not await _guard(ev):
         return
-    r = rt(context)
-    uid = update.effective_user.id
-    arg = (context.args[0].lower() if context.args else "").strip()
-    if arg in ("fast", "http", "快速"):
-        r.set_mode(uid, "fast")
+    r = ev.rt
+    arg = (ev.args[0].lower() if ev.args else "").strip()
+    if arg in ("fast", "http"):
+        r.set_mode(ev.uid, "fast")
         msg = ("⚡ <b>Fast mode</b>\n"
                "HTTP only. Quick, but a gate that runs a countdown will beat you.")
-    elif arg in ("browser", "slow", "浏览器"):
-        r.set_mode(uid, "browser")
+    elif arg in ("browser", "slow"):
+        r.set_mode(ev.uid, "browser")
         msg = ("🌐 <b>Browser mode</b>\n"
                "A real Chromium opens the page. Slower, but it clicks through "
-               "countdowns and popups that HTTP can't touch.")
-    elif arg in ("auto", "自动", ""):
-        r.set_mode(uid, "auto")
+               "countdowns and popups that HTTP cannot touch.")
+    elif arg in ("auto", ""):
+        r.set_mode(ev.uid, "auto")
         msg = ("<b>Auto</b> it is.\n"
                "Fast path first, browser only if the gate actually needs one. "
                "This is what you want.")
     else:
         msg = ("Usage: <code>/mode auto</code> · <code>/mode fast</code> · "
                "<code>/mode browser</code>")
-    await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+    await ev.reply(msg)
 
 
-async def cmd_supported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """`/sites` 看全表，`/sites gplinks` 查一个。"""
-    q = " ".join(context.args or []).strip()
+async def cmd_supported(ev: Event) -> None:
+    """`/sites` lists everything, `/sites gplinks` looks one up."""
+    q = " ".join(ev.args or []).strip()
     text = sites.search_text(q) if q else sites.supported_text()
-    await update.effective_message.reply_text(
-        text, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW
-    )
+    await ev.reply(text)
 
 
 async def _farm_loop(rt_obj: Runtime) -> None:
-    """后台保温，但按需且温和。
+    """Keep the pool warm, but gently and only when it is actually needed.
 
-    以前一启动就扫 220 个代理，几百条 SYN 把出站连接占满，Telegram 的长轮询
-    直接超时（手机上尤其明显）。现在只有真的被 IP 墙挡过才补货，而且隔很久才动一次。
+    The old version scanned 220 proxies the moment the process started; a few
+    hundred SYNs filled the outbound socket table and Telegram long-polling
+    timed out. Now it only refills after a real IP wall, and rarely.
     """
-    await asyncio.sleep(300)          # 启动后先让轮询站稳
+    await asyncio.sleep(300)          # let polling settle after a restart
     while True:
         engine = rt_obj.engine
         farm = engine.farm
@@ -214,7 +200,7 @@ async def _farm_loop(rt_obj: Runtime) -> None:
         await asyncio.sleep(1800)
 
 
-async def _reply_proxy_check(msg, px: str, saved: bool = False) -> None:
+async def _reply_proxy_check(ev: Event, px: str, saved: bool = False) -> None:
     t0 = time.perf_counter()
     ip = country = ""
     err = ""
@@ -246,40 +232,35 @@ async def _reply_proxy_check(msg, px: str, saved: bool = False) -> None:
             f"Exit IP <code>{F.h(ip)}</code>{where} · answered in {took:.1f}s\n\n"
             "<i>Send the link again — gates that check the IP should let us through now.</i>"
         )
-    await msg.reply_text(text, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
+    await ev.reply(text)
 
 
 @owner_only
-async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    r = rt(context)
-    msg = update.effective_message
-    args = list(context.args or [])
+async def cmd_proxy(ev: Event) -> None:
+    r = ev.rt
+    args = list(ev.args or [])
     arg = " ".join(args).strip()
     sub = (args[0].lower() if args else "")
 
-    # ---------------------------------------------------- 固定代理
+    # ---------------------------------------------------- fixed proxy
     if arg.lower() in ("none", "clear", "reset"):
         r.set_proxy("")
-        await msg.reply_text(
+        await ev.reply(
             "🛰 <b>Back to the server's own IP</b>\n\n"
             "<i>No custom exit anymore. If a gate starts refusing us again, "
-            "<code>/proxy on IN</code> is the way back.</i>",
-            parse_mode=ParseMode.HTML,
-            link_preview_options=NO_PREVIEW,
+            "<code>/proxy on IN</code> is the way back.</i>"
         )
         return
 
-    # ---------------------------------------------------- 农场开关
+    # ---------------------------------------------------- farm switch
     if sub in ("on", "off") and len(args) <= 2:
         if sub == "off":
             r.engine.set_farm(False)
             set_env_value("PROXY_FARM", "false")
-            await msg.reply_text(
+            await ev.reply(
                 "🌾 <b>Pool off</b>\n\n"
                 "<i>No more automatic IP rotation. Links that need a local IP will "
-                "fail honestly instead of retrying.</i>",
-                parse_mode=ParseMode.HTML,
-                link_preview_options=NO_PREVIEW,
+                "fail honestly instead of retrying.</i>"
             )
             return
         cc = (args[1].upper()[:2] if len(args) > 1 else r.cfg.proxy_country)
@@ -287,19 +268,17 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         set_env_value("PROXY_FARM", "true")
         set_env_value("PROXY_COUNTRY", cc)
         st = r.engine.farm.stats() if r.engine.farm else {}
-        await msg.reply_text(
+        await ev.reply(
             f"🌾 <b>Pool on · {F.h(cc)}</b>\n\n"
             f"{st.get('total', 0)} IPs in hand, {st.get('site_ok', 0)} already cleared "
             "a real gate.\n\n"
             "<i>It only kicks in when a site walls our IP — normal links don't pay "
             "for it.</i>\n"
-            "<code>/proxy scan</code> fills the pool right now.",
-            parse_mode=ParseMode.HTML,
-            link_preview_options=NO_PREVIEW,
+            "<code>/proxy scan</code> fills the pool right now."
         )
         return
 
-    # ---------------------------------------------------- 扫描补货
+    # ---------------------------------------------------- scan
     if sub in ("scan", "refresh", "harvest"):
         cc = r.cfg.proxy_country
         target = ""
@@ -313,66 +292,52 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             set_env_value("PROXY_FARM", "true")
             set_env_value("PROXY_COUNTRY", cc)
         farm = r.engine.farm
-        note = await msg.reply_text(
+        note = await ev.reply(
             f"🌾 <b>Looking for {F.h(cc)} proxies…</b>\n"
             "<i>harvest → ask each one for its exit IP → check the country"
-            f"{' → open the site through it' if target else ''}</i>",
-            parse_mode=ParseMode.HTML,
-            link_preview_options=NO_PREVIEW,
+            f"{' → open the site through it' if target else ''}</i>"
         )
         rep = await farm.refresh(target=target or None, limit=250, budget=55)
         st = farm.stats()
-        await note.edit_text(
-            F.scan_card(cc, rep, st, target),
-            parse_mode=ParseMode.HTML,
-            link_preview_options=NO_PREVIEW,
-        )
+        await note.edit(F.scan_card(cc, rep, st, target))
         return
 
-    # ---------------------------------------------------- 列表
+    # ---------------------------------------------------- list
     if sub in ("list", "ls", "show"):
         farm = r.engine.farm
         if not farm:
-            await msg.reply_text(
-                "🌾 <b>Pool is off</b>\n\nTurn it on with <code>/proxy on IN</code> first.",
-                parse_mode=ParseMode.HTML,
+            await ev.reply(
+                "🌾 <b>Pool is off</b>\n\nTurn it on with <code>/proxy on IN</code> first."
             )
             return
         rows = farm.sample(12)
         if not rows:
-            await msg.reply_text(
+            await ev.reply(
                 "🌾 <b>Pool is empty</b>\n\n"
                 "<i>Nothing alive from the last scan. Run <code>/proxy scan</code> — "
-                "free lists churn fast.</i>",
-                parse_mode=ParseMode.HTML,
-                link_preview_options=NO_PREVIEW,
+                "free lists churn fast.</i>"
             )
             return
-        await msg.reply_text(
-            F.pool_card(rows, farm._db, farm.country, farm.stats()["total"]),
-            parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW,
-        )
+        await ev.reply(F.pool_card(rows, farm._db, farm.country, farm.stats()["total"]))
         return
 
-    # ---------------------------------------------------- 手动增删
+    # ---------------------------------------------------- manual add / remove
     if sub in ("add", "del", "rm") and len(args) >= 2:
         farm = r.engine.farm or (r.engine.set_farm(True), r.engine.farm)[1]
         raw = args[1]
         if sub == "add":
             px = farm.add(raw)
-            await msg.reply_text(
+            await ev.reply(
                 f"✅ Added <code>{F.h(px or raw)}</code> to the pool."
                 if px else
-                "❌ That isn't a valid <code>ip:port</code> — nothing added.",
-                parse_mode=ParseMode.HTML)
+                "❌ That isn't a valid <code>ip:port</code> — nothing added."
+            )
         else:
             ok = farm.remove(raw)
-            await msg.reply_text(
-                "🗑 Dropped it from the pool." if ok else "❌ That one wasn't in the pool.",
-                parse_mode=ParseMode.HTML)
+            await ev.reply("🗑 Dropped it from the pool." if ok else "❌ That one wasn't in the pool.")
         return
 
-    # ---------------------------------------------------- 状态 / 检测
+    # ---------------------------------------------------- status / check
     if not arg or arg.lower() in ("test", "check", "status"):
         px = r.cfg.proxy
         farm = r.engine.farm
@@ -387,25 +352,21 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             extra = (f"<i>{st.get('fresh', 0)} fresh · median "
                      f"{st.get('median_ms', 0)} ms</i>")
         if px:
-            await _reply_proxy_check(msg, px)
+            await _reply_proxy_check(ev, px)
             return
-        await msg.reply_text(
-            F.proxy_card(px, farm_line, extra),
-            parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW,
-        )
+        await ev.reply(F.proxy_card(px, farm_line, extra))
         return
 
     if not arg.lower().startswith(("http://", "https://", "socks5://", "socks4://")):
-        await msg.reply_text(
+        await ev.reply(
             "That doesn't look like a proxy.\n\n"
             "It has to start with <code>http://</code>, <code>https://</code> or "
-            "<code>socks5://</code>.",
-            parse_mode=ParseMode.HTML,
+            "<code>socks5://</code>."
         )
         return
 
     r.set_proxy(arg)
-    await _reply_proxy_check(msg, arg, saved=True)
+    await _reply_proxy_check(ev, arg, saved=True)
 
 
 async def _whois(proxy: str = "") -> Dict:
@@ -464,12 +425,11 @@ def _ip_verdict(b: Optional[Dict]) -> str:
             "the VPN wall, that's your verdict.")
 
 
-async def cmd_ip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_ip(ev: Event) -> None:
     """Answer 'do I need a proxy here?' with evidence."""
-    if not await _guard(update, context):
+    if not await _guard(ev):
         return
-    r = rt(context)
-    cfg = r.cfg
+    cfg = ev.rt.cfg
     blocks: List[Dict] = []
     direct: Optional[Dict] = None
 
@@ -490,15 +450,11 @@ async def cmd_ip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             blocks.append({"label": "Via your fixed proxy",
                            "error": f"{type(exc).__name__}: {str(exc)[:110]}"})
 
-    await update.effective_message.reply_text(
-        F.ip_card(blocks, _ip_verdict(effective)),
-        parse_mode=ParseMode.HTML,
-        link_preview_options=NO_PREVIEW,
-    )
+    await ev.reply(F.ip_card(blocks, _ip_verdict(effective)))
 
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    r = rt(context)
+async def cmd_status(ev: Event) -> None:
+    r = ev.rt
     up = int(time.time() - r.started)
     inflight, waiting = r.engine.load()
     st = r.db.stats()
@@ -508,135 +464,121 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         fs = r.engine.farm.stats()
         farm = (f"{fs['country']} pool · {fs['total']} IPs · "
                 f"{fs['site_ok']} site-tested · {fs['median_ms']} ms")
-    await update.effective_message.reply_text(
+    browser = r.cfg.allow_browser and browser_available()
+    await ev.reply(
         F.status_card(
             up, inflight, waiting, cached, hits,
             st["users"], st["active_today"], st["today"], st["ok_today"],
-            r.cfg.allow_browser, r.cfg.proxy, farm,
-        ),
-        parse_mode=ParseMode.HTML,
-        link_preview_options=NO_PREVIEW,
+            browser, r.cfg.proxy, farm,
+        )
     )
 
 
-@owner_only
-async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    st = rt(context).db.stats()
-    await update.effective_message.reply_text(
-        F.stats_card(st, st["top"]),
-        parse_mode=ParseMode.HTML,
-        link_preview_options=NO_PREVIEW,
-    )
+def browser_available() -> bool:
+    try:
+        import playwright  # noqa: F401
+
+        return True
+    except Exception:
+        return False
 
 
 @owner_only
-async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    n = rt(context).db.user_count()
-    await update.effective_message.reply_text(
-        f"👥 <b>{n}</b> users have talked to the bot so far.", parse_mode=ParseMode.HTML
-    )
+async def cmd_stats(ev: Event) -> None:
+    st = ev.rt.db.stats()
+    await ev.reply(F.stats_card(st, st["top"]))
 
 
 @owner_only
-async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    r = rt(context)
+async def cmd_users(ev: Event) -> None:
+    n = ev.rt.db.user_count()
+    await ev.reply(f"👥 <b>{n}</b> users have talked to the bot so far.")
+
+
+@owner_only
+async def cmd_ban(ev: Event) -> None:
+    r = ev.rt
     target = None
-    if update.effective_message.reply_to_message:
-        target = update.effective_message.reply_to_message.from_user.id
-    elif context.args and context.args[0].lstrip("-").isdigit():
-        target = int(context.args[0])
+    if ev.reply_to_uid:
+        target = ev.reply_to_uid
+    elif ev.args and ev.args[0].lstrip("-").isdigit():
+        target = int(ev.args[0])
     if not target:
-        await update.effective_message.reply_text(
+        await ev.reply(
             "Reply to a message with <code>/ban</code>, or give me an ID: "
-            "<code>/ban 123456</code>",
-            parse_mode=ParseMode.HTML,
+            "<code>/ban 123456</code>"
         )
         return
-    r.db.ban(target, " ".join(context.args[1:]) if len(context.args) > 1 else "")
-    await update.effective_message.reply_text(
-        f"🚫 <code>{target}</code> can't use the bot anymore.", parse_mode=ParseMode.HTML
-    )
+    r.db.ban(target, " ".join(ev.args[1:]) if len(ev.args) > 1 else "")
+    await ev.reply(f"🚫 <code>{target}</code> can't use the bot anymore.")
 
 
 @owner_only
-async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not (context.args and context.args[0].lstrip("-").isdigit()):
-        await update.effective_message.reply_text(
-            "Usage: <code>/unban 123456</code>", parse_mode=ParseMode.HTML
-        )
+async def cmd_unban(ev: Event) -> None:
+    if not (ev.args and ev.args[0].lstrip("-").isdigit()):
+        await ev.reply("Usage: <code>/unban 123456</code>")
         return
-    target = int(context.args[0])
-    rt(context).db.unban(target)
-    await update.effective_message.reply_text(
-        f"✅ <code>{target}</code> is welcome again.", parse_mode=ParseMode.HTML
-    )
+    target = int(ev.args[0])
+    ev.rt.db.unban(target)
+    await ev.reply(f"✅ <code>{target}</code> is welcome again.")
 
 
 @owner_only
-async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.effective_message.text.partition(" ")[2].strip()
+async def cmd_broadcast(ev: Event) -> None:
+    text = ev.text.partition(" ")[2].strip()
     if not text:
-        await update.effective_message.reply_text(
-            "Usage: <code>/broadcast your message</code>", parse_mode=ParseMode.HTML
-        )
+        await ev.reply("Usage: <code>/broadcast your message</code>")
         return
-    r = rt(context)
+    r = ev.rt
     ids = r.db.all_user_ids()
-    await update.effective_message.reply_text(f"📤 Sending to {len(ids)} users…")
+    await ev.reply(f"📤 Sending to {len(ids)} users…")
     ok = fail = 0
     for uid in ids:
         try:
-            await context.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
+            await ev.send(uid, text)
             ok += 1
         except Exception:
             fail += 1
         await asyncio.sleep(0.05)
-    await update.effective_message.reply_text(
-        f"✅ Delivered to {ok} · {fail} blocked or gone."
-    )
+    await ev.reply(f"✅ Delivered to {ok} · {fail} blocked or gone.")
 
 
 # ------------------------------------------------------------------ resolve
 
-async def _one(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> Dict:
+async def _one(ev: Event, url: str) -> Dict:
     """Resolve a single URL and persist the outcome."""
-    r = rt(context)
-    uid = update.effective_user.id
+    r = ev.rt
     try:
-        data = await r.engine.resolve(url, allow_browser=r.allow_browser(uid))
+        data = await r.engine.resolve(url, allow_browser=r.allow_browser(ev.uid))
     except Exception as exc:
         data = {
             "input": url, "final": "", "ok": False, "method": "", "steps": [],
             "elapsed": 0.0, "note": f"{type(exc).__name__}: {exc}", "blocked": "",
         }
-    r.db.bump_user(uid)
+    r.db.bump_user(ev.uid)
     r.db.log_request(
-        uid, sites.host_of(url), url, data.get("final", ""),
+        ev.uid, sites.host_of(url), url, data.get("final", ""),
         bool(data.get("ok")), data.get("method", ""), float(data.get("elapsed", 0)),
     )
     return data
 
 
-def _buttons(data: Dict, key: str) -> InlineKeyboardMarkup:
+def _buttons(data: Dict, key: str):
     """Every result gets a way forward: the path, the link, or a second attempt."""
-    row = [InlineKeyboardButton("🧭 Path", callback_data=key)]
+    row = [("🧭 Path", "cb:" + key)]
     if data.get("ok") and data.get("final"):
-        row.append(InlineKeyboardButton("🔗 Open", url=data["final"]))
+        row.append(("🔗 Open", "url:" + data["final"]))
     elif data.get("method") != "browser" and (data.get("blocked") or "") != "vpn":
-        row.append(InlineKeyboardButton("🌐 Try browser", callback_data="rb:" + key))
-    return InlineKeyboardMarkup([row])
+        row.append(("🌐 Try browser", "cb:rb:" + key))
+    return [row]
 
 
-async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: List[str]) -> None:
-    r = rt(context)
-    uid = update.effective_user.id
-    chat_id = update.effective_chat.id
+async def do_bypass(ev: Event, urls: List[str]) -> None:
+    r = ev.rt
 
-    allowed, retry = r.allow(uid)
+    allowed, retry = r.allow(ev.uid)
     if not allowed:
-        await update.effective_message.reply_text(
-            F.rate_limited(retry), parse_mode=ParseMode.HTML
-        )
+        await ev.reply(F.rate_limited(retry))
         return
 
     # file hosts: no content scraping
@@ -644,14 +586,12 @@ async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: Li
     for url in urls:
         scraper = sites.is_scraper_only(url)
         if scraper:
-            await update.effective_message.reply_text(
+            await ev.reply(
                 f"🚫 <b>Not this one</b>\n"
                 f"<code>{F.h(F.short(url, 60))}</code>\n\n"
                 f"<i>{F.h(scraper)} is a file host. Pulling direct download links out "
                 f"of it means scraping pirated content, and that's not something "
-                f"this bot does.</i>",
-                parse_mode=ParseMode.HTML,
-                link_preview_options=NO_PREVIEW,
+                f"this bot does.</i>"
             )
         else:
             todo.append(url)
@@ -659,18 +599,11 @@ async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: Li
         return
 
     total = len(todo)
-    status = await update.effective_message.reply_text(
-        F.resolving(total),
-        parse_mode=ParseMode.HTML,
-        link_preview_options=NO_PREVIEW,
-    )
-    try:
-        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-    except Exception:
-        pass
+    status = await ev.reply(F.resolving(total))
+    await ev.typing()
 
     # parallel resolve: multiple links don't wait for each other
-    results = await asyncio.gather(*[_one(update, context, u) for u in todo])
+    results = await asyncio.gather(*[_one(ev, u) for u in todo])
 
     for i, data in enumerate(results, 1):
         text = F.result_card(data, i, total)
@@ -679,108 +612,79 @@ async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: Li
 
         if i == 1:
             try:
-                await status.edit_text(
-                    text, parse_mode=ParseMode.HTML, reply_markup=kb, link_preview_options=NO_PREVIEW
-                )
+                await status.edit(text, kb)
                 continue
             except Exception:
                 pass
-        await update.effective_message.reply_text(
-            text, parse_mode=ParseMode.HTML, reply_markup=kb, link_preview_options=NO_PREVIEW
-        )
+        await ev.reply(text, kb)
 
 
-async def cmd_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update, context):
+async def cmd_bypass(ev: Event) -> None:
+    if not await _guard(ev):
         return
-    text = update.effective_message.text or ""
-    urls = extract_urls(text.partition(" ")[2] if " " in text else "", rt(context).cfg.max_urls)
+    text = ev.text or ""
+    urls = extract_urls(text.partition(" ")[2] if " " in text else "", ev.rt.cfg.max_urls)
     if not urls:
-        await update.effective_message.reply_text(
+        await ev.reply(
             "Give me something to work with:\n\n"
-            "<code>/bypass https://gplinks.co/abc123</code>",
-            parse_mode=ParseMode.HTML,
+            "<code>/bypass https://gplinks.co/abc123</code>"
         )
         return
-    await do_bypass(update, context, urls)
+    await do_bypass(ev, urls)
 
 
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update, context):
+async def on_text(ev: Event) -> None:
+    if not await _guard(ev):
         return
-    text = update.effective_message.text or ""
-    urls = extract_urls(text, rt(context).cfg.max_urls)
+    urls = extract_urls(ev.text or "", ev.rt.cfg.max_urls)
     if not urls:
         return  # don't interrupt normal chat
-    await do_bypass(update, context, urls)
+    await do_bypass(ev, urls)
 
 
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    if not q:
-        return
-    r = rt(context)
-    payload = q.data or ""
+async def on_callback(ev: Event) -> None:
+    r = ev.rt
+    payload = ev.callback_data or ""
 
     # ---------------------------------------------------------- browser retry
     if payload.startswith("rb:"):
         data = r.get_trace(payload[3:])
         if not data:
-            await q.answer("That card expired — send the link again.", show_alert=True)
+            await ev.answer("That card expired — send the link again.", alert=True)
             return
         url = data.get("input") or ""
-        await q.answer("Opening a browser — give it a few seconds…")
+        await ev.answer("Opening a browser — give it a few seconds…")
         try:
-            await q.message.edit_reply_markup(reply_markup=None)
-            await context.bot.send_chat_action(q.message.chat_id, ChatAction.TYPING)
+            await ev.clear_buttons()
+            await ev.typing()
         except Exception:
             pass
         try:
             new = await r.engine.resolve(url, allow_browser=True, fresh=True)
         except Exception as exc:
-            await q.message.reply_text(
-                f"⚠️ <b>The browser run fell over</b>\n\n<i>{F.h(str(exc)[:180])}</i>",
-                parse_mode=ParseMode.HTML,
+            await ev.reply(
+                f"⚠️ <b>The browser run fell over</b>\n\n<i>{F.h(str(exc)[:180])}</i>"
             )
             return
         key = r.put_trace(new)
         try:
-            await q.message.edit_text(
-                F.result_card(new), parse_mode=ParseMode.HTML,
-                reply_markup=_buttons(new, key), link_preview_options=NO_PREVIEW,
-            )
+            await ev.edit_self(F.result_card(new), _buttons(new, key))
         except Exception:
-            await q.message.reply_text(
-                F.result_card(new), parse_mode=ParseMode.HTML,
-                reply_markup=_buttons(new, key), link_preview_options=NO_PREVIEW,
-            )
+            await ev.reply(F.result_card(new), _buttons(new, key))
         return
 
     # ---------------------------------------------------------- trace
     data = r.get_trace(payload)
     if not data:
-        await q.answer("This trace expired — resolve the link again.", show_alert=True)
+        await ev.answer("This trace expired — resolve the link again.", alert=True)
         return
-    await q.answer()
+    await ev.answer()
     try:
-        await q.message.reply_text(
-            F.trace_card(data), parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW
-        )
+        await ev.reply(F.trace_card(data))
     except Exception:
         pass
 
 
-async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    err = context.error
-    app = context.application
-    r: Optional[Runtime] = app.bot_data.get("rt")
-    if r and r.cfg.logger_chat:
-        try:
-            await app.bot.send_message(
-                r.cfg.logger_chat,
-                f"⚠️ <b>Error</b>\n<code>{F.h(type(err).__name__)}</code>\n{F.h(str(err))[:600]}",
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            pass
-    print(f"[error] {type(err).__name__}: {err}")
+async def report_error(exc: BaseException, send_to: Optional[int] = None) -> None:
+    """Log an unhandled error, and tell the owner's log chat if there is one."""
+    print(f"[error] {type(exc).__name__}: {exc}")

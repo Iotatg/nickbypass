@@ -1,3 +1,3 @@
-"""Nick Bypass Bot —— 基于 linkresolver 的 Telegram 链接解析机器人。"""
+"""Nick Bypass Bot - a Telegram link resolver built on linkresolver."""
 
 __version__ = "1.0.0"

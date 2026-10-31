@@ -6,9 +6,9 @@ honestly when a site refuses the server's IP.
 
 ```
 nickbypass/
-├── nickbot/          Telegram bot (python-telegram-bot v21, sqlite, httpx)
-│   ├── nickbot/      config, resolver, gates, proxy farm, handlers
-│   ├── tests/        107 offline checks (no network needed)
+├── nickbot/          Telegram bot (Kurigram or python-telegram-bot, sqlite, httpx)
+│   ├── nickbot/      config, transport, resolver, gates, proxy farm, handlers
+│   ├── tests/        186 offline checks (no network needed)
 │   ├── DEPLOY.md     Termux / VPS / Windows / macOS / Docker / Pi / PaaS
 │   └── README.md     commands, config, how it resolves
 └── linkresolver/     standalone resolution engine (HTTP + Playwright)
@@ -25,6 +25,10 @@ python3 -m nickbot --check
 python3 -m nickbot
 ```
 
+The bot runs on **Kurigram** (MTProto) when `API_ID` / `API_HASH` are set, and on
+**python-telegram-bot** otherwise — same handlers, same cards, one config line
+(`BACKEND=auto|kurigram|ptb`).
+
 `linkresolver` is picked up from `../linkresolver` by default
 (`LINKRESOLVER_HOME` overrides it).
 
@@ -33,8 +37,10 @@ has copy-paste steps for each, including Termux on Android.
 
 ## What it does
 
-- Fast path: async HTTP/2 with cookie jar, 30x, `meta refresh`, JS `location`,
-  base64 params, inline JSON, `/links/go` site API.
+- Fast path: async HTTP with its own cookie jar, 30x, `meta refresh`, JS
+  `location`, base64 params, inline JSON, `/links/go` site API (including the
+  `csrfToken` + `X-CSRF-TOKEN` double submit and the countdown the GT template
+  waits for).
 - Browser fallback only when a page genuinely needs JS/timers (Playwright).
 - Detects and reports real walls: Cloudflare challenge, "VPN detected",
   `403` on datacenter ASNs — instead of inventing a result.

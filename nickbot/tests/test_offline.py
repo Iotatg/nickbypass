@@ -1,4 +1,4 @@
-"""离线单测：不联网、不连 Telegram。
+"""Offline tests: no network, no Telegram.
 
     python3 tests/test_offline.py
 """
@@ -27,37 +27,37 @@ def check(name, got, want):
     print(f"  {'✓' if ok else '✗'} {name}" + ("" if ok else f"\n      got={got!r}\n      want={want!r}"))
 
 
-print("\n[1] 链接提取")
-check("单链接", extract_urls("看看这个 https://gplinks.co/abc123 谢谢"), ["https://gplinks.co/abc123"])
-check("裸域名", extract_urls("earn4link.in/xyz"), ["https://earn4link.in/xyz"])
-check("多链接", len(extract_urls("a https://a.com/1 b https://b.com/2 c https://c.com/3")), 3)
-check("去重", len(extract_urls("https://a.com/1 https://a.com/1")), 1)
-check("上限", len(extract_urls(" ".join(f"https://x{i}.com/p" for i in range(10)))), 5)
-check("尾部标点", extract_urls("链接 https://a.com/1。"), ["https://a.com/1"])
-check("排除 t.me", extract_urls("t.me/somechannel"), [])
+print("\n[1] URL extraction")
+check("single link", extract_urls("look at this https://gplinks.co/abc123 thanks"), ["https://gplinks.co/abc123"])
+check("bare domain", extract_urls("earn4link.in/xyz"), ["https://earn4link.in/xyz"])
+check("multiple links", len(extract_urls("a https://a.com/1 b https://b.com/2 c https://c.com/3")), 3)
+check("de-duplicated", len(extract_urls("https://a.com/1 https://a.com/1")), 1)
+check("cap", len(extract_urls(" ".join(f"https://x{i}.com/p" for i in range(10)))), 5)
+check("trailing punctuation", extract_urls("link https://a.com/1."), ["https://a.com/1"])
+check("t.me excluded", extract_urls("t.me/somechannel"), [])
 
-print("\n[2] 站点识别")
+print("\n[2] site recognition")
 check("gplinks", sites.display_name("https://gplinks.co/abc"), "GPLinks")
-check("换 TLD 仍命中", sites.display_name("https://gplinks.in/abc"), "GPLinks")
+check("still matches with a different TLD", sites.display_name("https://gplinks.in/abc"), "GPLinks")
 check("oii.la", sites.display_name("https://oii.la/x"), "Oii.la")
-check("未知域名", sites.display_name("https://random-site.xyz/a"), "random-site.xyz")
-check("纯跳转不需浏览器", sites.needs_browser("https://bit.ly/x"), False)
-check("广告门需浏览器", sites.needs_browser("https://earn4link.in/x"), True)
-check("爬虫类拦截", sites.is_scraper_only("https://hubcloud.club/drive/abc"), "hubcloud")
-check("正常站不拦", sites.is_scraper_only("https://gplinks.co/x"), None)
+check("unknown domain", sites.display_name("https://random-site.xyz/a"), "random-site.xyz")
+check("plain redirect needs no browser", sites.needs_browser("https://bit.ly/x"), False)
+check("ad gate needs a browser", sites.needs_browser("https://earn4link.in/x"), True)
+check("scraper host blocked", sites.is_scraper_only("https://hubcloud.club/drive/abc"), "hubcloud")
+check("normal site not blocked", sites.is_scraper_only("https://gplinks.co/x"), None)
 
-print("\n[3] 限流")
+print("\n[3] rate limit")
 cfg = Config.load()
 cfg.rate_limit = 3
 cfg.rate_window = 60
 rt = Runtime(cfg)
 res = [rt.allow(1)[0] for _ in range(4)]
-check("前3次放行", res, [True, True, True, False])
-check("别的用户不受影响", rt.allow(2)[0], True)
+check("first 3 allowed", res, [True, True, True, False])
+check("other users unaffected", rt.allow(2)[0], True)
 ok, retry = rt.allow(1)
-check("重试时间合理", 0 < retry <= 61, True)
+check("retry delay is sane", 0 < retry <= 61, True)
 
-print("\n[4] 数据库")
+print("\n[4] database")
 db = DB(pathlib.Path("/tmp/_nickbot_test.db"))
 for p in ("/tmp/_nickbot_test.db",):
     try:
@@ -70,94 +70,128 @@ db.touch_user(10, "alice", "Alice")
 db.bump_user(10)
 db.log_request(10, "gplinks.co", "https://gplinks.co/x", "https://dst.example/y", True, "browser", 6.2)
 st = db.stats()
-check("用户数", st["users"], 1)
-check("请求数", st["total"], 1)
-check("成功率", round(st["success_rate"]), 100)
-check("热门站", st["top"][0][0], "gplinks.co")
-check("未封禁", db.is_banned(10), False)
+check("user count", st["users"], 1)
+check("request count", st["total"], 1)
+check("success rate", round(st["success_rate"]), 100)
+check("popular sites", st["top"][0][0], "gplinks.co")
+check("not banned", db.is_banned(10), False)
 db.ban(10, "test")
-check("已封禁", db.is_banned(10), True)
+check("banned", db.is_banned(10), True)
 db.unban(10)
-check("已解封", db.is_banned(10), False)
-check("用户列表", db.all_user_ids(), [10])
+check("unbanned", db.is_banned(10), False)
+check("user list", db.all_user_ids(), [10])
 db.close()
 
-print("\n[5] 消息排版与转义")
+print("\n[5] message layout and escaping")
 data_ok = {
     "input": "https://gplinks.co/x", "final": "https://dst.example/a?b=1&c=2",
     "ok": True, "method": "browser", "elapsed": 6.24, "note": "",
     "steps": [{"kind": "request", "url": "https://gplinks.co/x", "status": 200, "detail": "html"}],
 }
 card = F.result_card(data_ok, 1, 2)
-check("成功卡片含终点", "dst.example/a?b=1&amp;c=2" in card, True)
-check("& 已转义", "&amp;" in card, True)
-check("编号与标题", card.startswith("✅ <b>Link bypassed</b> · 1/2"), True)
-check("成功卡片有原文链接", "You sent" in card and "gplinks.co/x" in card, True)
-check("成功卡片有一句人话结尾", card.count("<i>") >= 2, True)
-check("成功卡片带页脚", card.rstrip().endswith("@nova93ec2c4_bot"), True)
-check("缓存结果标注", "from cache" in F.result_card(dict(data_ok, cached=True)), True)
+check("success card contains the destination", "dst.example/a?b=1&amp;c=2" in card, True)
+check("& escaped", "&amp;" in card, True)
+check("numbering and title", card.startswith("✅ <b>Link bypassed</b> · 1/2"), True)
+check("success card shows the original link", "You sent" in card and "gplinks.co/x" in card, True)
+check("success card ends with a human line", card.count("<i>") >= 2, True)
+check("success card has the footer", card.rstrip().endswith("@nova93ec2c4_bot"), True)
+check("cached result is marked", "from cache" in F.result_card(dict(data_ok, cached=True)), True)
 
 data_bad = {
     "input": "https://ouo.io/x", "final": "https://ouo.io/x", "ok": False,
-    "method": "browser", "elapsed": 12.0, "note": "被 Cloudflare 拦（403 just a moment）", "steps": [],
+    "method": "browser", "elapsed": 12.0, "note": "blocked by Cloudflare（403 just a moment）", "steps": [],
 }
 card = F.result_card(data_bad)
-check("失败卡片带原因", "Cloudflare" in card, True)
-check("失败不显示成功标记", "✅" in card, False)
-check("失败卡片解释发生了什么", "What happened" in card and "What to try" in card, True)
-check("失败卡片不再重复原始 note", "被 Cloudflare 拦" in card, False)
+check("failure card carries a reason", "Cloudflare" in card, True)
+check("failure card shows no success mark", "✅" in card, False)
+check("failure card explains what happened", "What happened" in card and "What to try" in card, True)
+check("failure card does not repeat the raw note", "blocked by Cloudflare" in card, False)
 
 vpn = dict(data_bad, blocked="vpn", note="Site blocks datacenter / VPN IPs", method="http")
 card = F.result_card(vpn)
-check("IP 墙给出可执行建议", "/proxy on IN" in card, True)
-check("IP 墙不推浏览器（同 IP 无用）", "browser" in card.lower(), False)
+check("IP wall gives actionable advice", "/proxy on IN" in card, True)
+check("IP wall does not suggest a browser (same IP)", "browser" in card.lower(), False)
 
 evil = dict(data_ok, final="https://x.example/<script>alert(1)</script>")
-check("HTML 注入被转义", "<script>" in F.result_card(evil), False)
+check("HTML injection escaped", "<script>" in F.result_card(evil), False)
 
 long_steps = [{"kind": "request", "url": "https://a.example/" + "x" * 80, "status": 200, "detail": "d" * 60} for _ in range(80)]
-check("轨迹截断", len(F.trace_card({"steps": long_steps})) <= F.MAX_LEN, True)
+check("trace truncated", len(F.trace_card({"steps": long_steps})) <= F.MAX_LEN, True)
 
-print("\n[5b] 出口 IP 判定（/ip）")
+print("\n[5b] exit IP verdict (/ip)")
 from nickbot.handlers import _ip_block, _ip_verdict  # noqa: E402
 
 dc = _ip_block("x", {"query": "1.2.3.4", "countryCode": "SG", "city": "Singapore",
                      "as": "AS132203 Tencent Building, Kejizhongyi Avenue",
                      "isp": "Shenzhen Tencent Computer Systems Company Limited"})
-check("机房 ASN 被认出", dc["hosting"], True)
-check("ASN 只留编号", dc["asn"], "AS132203")
-check("ISP 名称被截断", len(dc["isp"]) <= 43, True)
-check("机房建议要代理", "PROXY" in _ip_verdict(dc), True)
+check("datacenter ASN recognised", dc["hosting"], True)
+check("ASN keeps only the number", dc["asn"], "AS132203")
+check("ISP name truncated", len(dc["isp"]) <= 43, True)
+check("datacenter suggests a proxy", "PROXY" in _ip_verdict(dc), True)
 
 jio = _ip_block("x", {"query": "49.36.12.84", "countryCode": "IN", "city": "Mumbai",
                       "as": "AS55836 Reliance Jio Infocomm Limited",
                       "isp": "Reliance Jio Infocomm Limited"})
-check("印度宽带被判住宅", jio["residential"], True)
-check("印度住宅说不需要代理", "without any proxy" in _ip_verdict(jio), True)
-check("印度住宅建议关掉池子", "/proxy off" in _ip_verdict(jio), True)
+check("Indian broadband classified as residential", jio["residential"], True)
+check("Indian home line needs no proxy", "without any proxy" in _ip_verdict(jio), True)
+check("Indian home line suggests turning the pool off", "/proxy off" in _ip_verdict(jio), True)
 
 us = _ip_block("x", {"query": "8.8.8.8", "countryCode": "US", "city": "Mountain View",
                      "as": "AS15169 Google LLC", "isp": "Google LLC"})
-check("外国机房不建议开池子", "Indian" not in _ip_verdict(us), True)
+check("foreign datacenter does not suggest a pool", "Indian" not in _ip_verdict(us), True)
 
-check("IP 卡片标签合法", "<b>" in F.ip_card([jio], "ok") and "</b>" in F.ip_card([jio], "ok"), True)
-check("查不到时给错误行", "timed out" in F.ip_card([{"label": "x", "error": "timed out"}], "v"), True)
+check("IP card tags are valid", "<b>" in F.ip_card([jio], "ok") and "</b>" in F.ip_card([jio], "ok"), True)
+check("lookup failure renders an error line", "timed out" in F.ip_card([{"label": "x", "error": "timed out"}], "v"), True)
 
-print("\n[6] 命令注册（用假 token 构建，不联网）")
-from nickbot.bot import build  # noqa: E402
+print("\n[6] command registration (fake token, no network)")
+from nickbot.bot import COMMANDS, build_ptb  # noqa: E402
 
 cfg.token = "123456:AAFakeTokenForOfflineTestOnly"
-app = build(cfg)
+cfg.backend = "ptb"
+app = build_ptb(cfg, rt)
 cmds = set()
 for group in app.handlers.values():
     for h in group:
         for name in getattr(h, "commands", []) or []:
             cmds.add(name)
-need = {"start", "help", "id", "mode", "supported", "status", "ip", "bypass", "stats", "users", "ban", "unban", "broadcast"}
-check("命令齐全", need.issubset(cmds), True)
-check("有回调处理", any("CallbackQueryHandler" in type(h).__name__ for g in app.handlers.values() for h in g), True)
+need = {"start", "help", "id", "mode", "supported", "status", "ip", "bypass",
+        "stats", "users", "ban", "unban", "broadcast"}
+check("all commands present", need.issubset(cmds), True)
+check("callback handler registered", any("CallbackQueryHandler" in type(h).__name__ for g in app.handlers.values() for h in g), True)
 
-print("\n[6b] 代理池只在被墙之后才启动")
+# The Kurigram build must register the same table, and every command has to be
+# in the table the menu is generated from.
+table = {c for c, _, _ in COMMANDS}
+check("command table covers the menu", need - {"help", "supported"} <= table, True)
+try:
+    import pyrogram  # noqa: E402
+    from nickbot.bot import build_kurigram  # noqa: E402
+
+    # Pyrogram queues add_handler() onto the client loop, so record the calls
+    # instead of reading dispatcher.groups (which stays empty until start()).
+    seen = []
+    orig = pyrogram.Client.add_handler
+
+    def record(self, handler, group=0):
+        seen.append(type(handler).__name__)
+        return handler, group
+
+    pyrogram.Client.add_handler = record
+    try:
+        cfg.api_id, cfg.api_hash, cfg.backend = 12345, "0123456789abcdef0123456789abcdef", "kurigram"
+        kuri = build_kurigram(cfg, rt)
+    finally:
+        pyrogram.Client.add_handler = orig
+    check("kurigram builds a client", isinstance(kuri, pyrogram.Client), True)
+    check("kurigram message handlers registered", seen.count("MessageHandler") >= len(COMMANDS), True)
+    check("kurigram callback registered", "CallbackQueryHandler" in seen, True)
+    check("auto backend picks kurigram", cfg.use_kurigram(), True)
+except ImportError:
+    print("  - kurigram not installed, skipping that half")
+cfg.backend = "auto"
+cfg.api_id, cfg.api_hash = 0, ""
+
+print("\n[6b] the pool only wakes up after a wall")
 
 
 class _StubFast:
@@ -177,15 +211,15 @@ async def _wall():
 
 
 b0, b1 = asyncio.run(_wall())
-check("默认不维护代理池", b0, False)
-check("撞到 IP 墙后标记需要", b1, True)
+check("no pool by default", b0, False)
+check("marked as needed after an IP wall", b1, True)
 
-print("\n[7] 引擎并发计数")
+print("\n[7] engine concurrency counters")
 async def _conc():
     inflight, waiting = rt.engine.load()
     return (inflight, waiting) == (0, 0)
 
-check("初始空闲", asyncio.run(_conc()), True)
+check("idle at start", asyncio.run(_conc()), True)
 
-print(f"\n结果：{PASS} 通过 / {FAIL} 失败\n")
+print(f"\nResult: {PASS} passed / {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

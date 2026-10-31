@@ -1,7 +1,7 @@
-"""浏览器模式：用 Chromium 真跑一遍 JS，点掉倒计时和"继续"按钮，抓最终地址。
+"""Browser mode: run the page in Chromium, wait out countdowns, click through
 
-这是现在唯一对 Linkvertise / GPLinks / ouo 这类"广告门"有效的方式：
-它们的终点是 JS 动态生成的，纯 HTTP 请求永远看不到。
+This is the only thing that works on Linkvertise / GPLinks / ouo style gates:
+they build the destination in JavaScript, so a plain HTTP request never sees it.
 """
 
 from __future__ import annotations
@@ -19,7 +19,8 @@ UA = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-# 广告/统计/弹窗域名，直接拦掉，省时间也更接近"人"的行为
+# Ad / analytics / popup hosts: blocked outright. Faster, and closer to how a
+# person browses.
 BLOCK_HOSTS = (
     "doubleclick.net", "googlesyndication.com", "google-analytics.com", "googletagmanager.com",
     "adservice.google.com", "popads.net", "popcash.net", "propellerads.com", "onclickads.net",
@@ -30,7 +31,7 @@ BLOCK_HOSTS = (
 
 CLICK_RX = (
     r"(continue|get\s*link|getlink|proceed|skip\s*ad|skip|click\s*here|download|verify|"
-    r"i'?m\s*not\s*a\s*robot|unlock|go\s*to\s*link|open\s*link|free\s*access|获取|继续|跳过)"
+    r"i'?m\s*not\s*a\s*robot|unlock|go\s*to\s*link|open\s*link|free\s*access|get\s*it|continue|skip)"
 )
 
 JS_FIND = r"""
@@ -52,7 +53,7 @@ JS_FIND = r"""
     if (e.id && /(btn|continue|get|link|go|submit)/i.test(e.id)) score += 3;
     if (e.className && /(btn|button|continue|getlink|submit)/i.test(String(e.className))) score += 2;
     if (/(ad|banner|popup|promo|sponsor)/i.test(t)) score -= 9;
-    if (/^(×|x|✕|close|关闭)$/i.test(t)) score -= 12;
+    if (/^(×|x|✕|close|dismiss)$/i.test(t)) score -= 12;
     if (score >= 10) out.push({t: t.slice(0, 60), score: score});
   }
   out.sort((a, b) => b.score - a.score);
@@ -90,7 +91,7 @@ class BrowserResolver:
         self.proxy = (proxy or "").strip()
 
     def _launch(self, p):
-        """优先用 Playwright 自带 Chromium，退回系统 Chromium。"""
+        """Use Playwright's bundled Chromium first, then a system install."""
         candidates = [
             dict(headless=self.headless, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]),
         ]
@@ -118,13 +119,13 @@ class BrowserResolver:
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:
-            return "", [Step("error", url, detail=f"Playwright 不可用：{exc}")], "未安装 playwright"
+            return "", [Step("error", url, detail=f"Playwright unavailable: {exc}")], "Playwright is not installed"
 
         with sync_playwright() as p:
             try:
                 browser = self._launch(p)
             except Exception as exc:
-                return "", [Step("error", url, detail=f"Chromium 启动失败：{exc}")], "浏览器启动失败"
+                return "", [Step("error", url, detail=f"Chromium failed to start: {exc}")], "Browser failed to start"
 
             ctx_kwargs = dict(
                 user_agent=UA,
@@ -139,7 +140,7 @@ class BrowserResolver:
             page = ctx.new_page()
             page.set_default_timeout(15000)
 
-            # 拦广告 / 统计
+            # Block ads / analytics
             def _route(route):
                 try:
                     h = host_of(route.request.url)
@@ -151,7 +152,7 @@ class BrowserResolver:
 
             ctx.route("**/*", _route)
 
-            # 记录主框架跳转
+            # Track main-frame navigations
             nav = {"last": ""}
 
             def _on_nav(frame):
@@ -159,7 +160,7 @@ class BrowserResolver:
                     return
                 u = frame.url
                 if u and u != nav["last"]:
-                    steps.append(Step("redirect", u, detail="浏览器内跳转"))
+                    steps.append(Step("redirect", u, detail="In-browser navigation"))
                     nav["last"] = u
 
             page.on("framenavigated", _on_nav)
@@ -168,7 +169,7 @@ class BrowserResolver:
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000 * 0.6))
             except Exception as exc:
-                steps.append(Step("note", url, detail=f"goto 超时/异常，继续观察页面：{type(exc).__name__}"))
+                steps.append(Step("note", url, detail=f"goto timed out / failed, still watching the page: {type(exc).__name__}"))
 
             deadline = time.time() + self.timeout
             clicked: set[str] = set()
@@ -179,7 +180,7 @@ class BrowserResolver:
                 cur = page.url
                 cur_host = host_of(cur)
 
-                # 已经离开广告门域名 -> 认为到终点
+                # Left the gate hosts: that is the destination
                 if cur and cur != url and cur_host and not any(
                     cur_host == g or cur_host.endswith("." + g) for g in gates
                 ):
@@ -192,13 +193,13 @@ class BrowserResolver:
                 except Exception:
                     pass
 
-                # 倒计时：等它走完
+                # Countdown: let it run out
                 m = re.search(r"(\d{1,2})\s*(?:s|sec|secs|second|seconds)\b", body, re.I)
                 if m and not waited_countdown:
                     waited_countdown = True
-                    steps.append(Step("note", cur, detail=f"页面有 {m.group(1)}s 倒计时，等待中"))
+                    steps.append(Step("note", cur, detail=f"Page has a {m.group(1)}s countdown, waiting"))
 
-                # 找按钮并点
+                # Find a button and click it
                 try:
                     labels = page.evaluate(JS_FIND, CLICK_RX)
                 except Exception:
@@ -214,18 +215,18 @@ class BrowserResolver:
                     except Exception:
                         ok = False
                     if ok:
-                        steps.append(Step("click", cur, detail=f"点击「{label}」"))
+                        steps.append(Step("click", cur, detail=f"Clicked \"{label}\""))
                         acted = True
                         page.wait_for_timeout(1200)
                         break
 
                 if not acted:
                     idle += 1
-                    # 换了页面 + 没有可点的东西 + 没有倒计时：如果已经离开广告站才是终点，
-                    # 还停在广告站（比如跳到 /explore、/404）就是没解析出来
+                    # New page, nothing to click, no timer: a destination only if we left the
+                    # gate hosts. Still on them (/explore, /404) means unresolved.
                     if page.url != url and idle >= 2 and not labels and not m:
                         steps.append(
-                            Step("note", page.url, detail="页面已无倒计时/按钮，但仍在广告站内，判定为未解析")
+                            Step("note", page.url, detail="No countdown or button left, still on the ad site: unresolved")
                         )
                         break
                     page.wait_for_timeout(900)
@@ -233,11 +234,11 @@ class BrowserResolver:
                     idle = 0
 
             if not final:
-                note = "浏览器跑完仍未离开广告门（可能需要验证码 / 登录 / 地区限制，或该链接本身失效）"
+                note = "Browser finished but never left the gate (captcha / login / region block, or the link is dead)"
             else:
-                note = "浏览器模式拿到终点"
+                note = "Reached the destination in browser mode"
 
-            steps.append(Step("note", final or page.url, detail=f"浏览器耗时 {time.time() - t0:.1f}s"))
+            steps.append(Step("note", final or page.url, detail=f"Browser took {time.time() - t0:.1f}s"))
             ctx.close()
             browser.close()
 

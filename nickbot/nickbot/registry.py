@@ -222,7 +222,8 @@ CURATED: tuple[tuple[str, str, str], ...] = (
     ("x.co", "X.co", "short"),
 )
 
-# 这些站要拿直链得写站点爬虫（网盘 / 盗版资源站），本机器人只做跳转展开
+# Getting a direct link out of these needs a site scraper (file hosts / piracy
+# sites). This bot only unwraps redirects.
 SCRAPER_ONLY: tuple[str, ...] = (
     "hubcloud", "hubdrive", "gdflix", "gdtot", "zdrive", "katdrive",
     "toonworld4all", "animekaizou", "filepress", "drivebot",

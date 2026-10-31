@@ -1,9 +1,10 @@
-"""解析编排：快路径（异步 HTTP / 站点 API）优先，浏览器只做最后兜底。"""
+"""Resolution orchestration: fast path first (async HTTP / site API), browser
+only as the last resort.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import re
 import sys
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -14,35 +15,8 @@ from .gates import FastResolver
 from .proxyfarm import Farm
 from .proxypool import ProxyPool
 
-
-# 引擎（linkresolver）内部的部分提示是中文的，机器人统一输出英文
-_TR = (
-    (r"^未安装 playwright$", "Playwright not installed"),
-    (r"^浏览器启动失败$", "Browser failed to start"),
-    (r"^浏览器模式拿到终点$", "Resolved with browser"),
-    (r"^浏览器跑完仍未离开广告门.*$",
-     "Browser finished but never left the ad gate (captcha / login / region block, or dead link)"),
-    (r"^Playwright 不可用：(.*)$", r"Playwright unavailable: \1"),
-    (r"^Chromium 启动失败：(.*)$", r"Chromium failed to start: \1"),
-    (r"^浏览器内跳转$", "In-browser navigation"),
-    (r"^goto 超时/异常，继续观察页面：(.*)$", r"goto timeout/error, still watching: \1"),
-    (r"^页面有 (\d+)s 倒计时，等待中$", r"Countdown \1s, waiting"),
-    (r"^点击「(.*)」$", r"Clicked «\1»"),
-    (r"^页面已无倒计时/按钮，但仍在广告站内，判定为未解析$",
-     "No countdown/button left, but still on the ad site — unresolved"),
-    (r"^浏览器耗时 ([\d.]+)s$", r"Browser took \1s"),
-)
-
-
-def to_english(text: str) -> str:
-    """把引擎返回的中文提示翻成英文（只处理已知的那几条）。"""
-    if not text:
-        return text
-    out = text
-    for pat, rep in _TR:
-        if re.search(pat, out):
-            out = re.sub(pat, rep, out)
-    return out
+BROWSER_HELP = ("Playwright isn't installed here, so the browser path is closed. "
+                "Install it with: pip install playwright && playwright install chromium")
 
 
 class Engine:
@@ -72,10 +46,11 @@ class Engine:
         self.waiting = 0
         self.hits = 0
         self.misses = 0
-        # 只有真被 IP 墙挡过，才值得去维护代理池（否则纯属浪费带宽）
+        # Only worth maintaining a proxy pool after a real IP wall; otherwise it
+        # is pure bandwidth for nothing.
         self.farm_needed = False
 
-    # ------------------------------------------------------------------ 缓存
+    # ------------------------------------------------------------------ cache
 
     def _cache_get(self, key: Tuple[str, bool]) -> Optional[Dict[str, Any]]:
         hit = self._cache.get(key)
@@ -94,43 +69,57 @@ class Engine:
             self._cache.pop(oldest, None)
         self._cache[key] = (time.time(), data)
 
-    # ------------------------------------------------------------ 浏览器兜底
+    # --------------------------------------------------------- browser fallback
 
     def _browser(self, url: str) -> Dict[str, Any]:
-        """浏览器兜底。Termux / 精简部署上没有 playwright 时不能把整条链拖死。"""
+        """Browser fallback. A slim install (Termux, Docker without Chromium)
+        must not take the whole chain down with it."""
         try:
             from linkresolver.browser import BrowserResolver
-        except Exception as exc:  # ImportError, 缺系统库, 没装引擎
+        except Exception as exc:  # ImportError, missing system libs, no engine
             return {
                 "final": "", "ok": False, "steps": [], "method": "browser",
                 "note": f"Browser engine unavailable here ({type(exc).__name__})",
+                "missing": True,
             }
 
-        br = BrowserResolver(
-            headless=True,
-            timeout=self.cfg.browser_timeout,
-            proxy=self.cfg.proxy,
-        )
-        final, steps, note = br.resolve(url)
+        try:
+            br = BrowserResolver(
+                headless=True,
+                timeout=self.cfg.browser_timeout,
+                proxy=self.cfg.proxy,
+            )
+            final, steps, note = br.resolve(url)
+        except Exception as exc:
+            missing = isinstance(exc, (ImportError, ModuleNotFoundError))
+            return {
+                "final": "", "ok": False, "method": "browser", "missing": missing,
+                "steps": [{"kind": "error", "url": url,
+                           "detail": f"{type(exc).__name__}: {str(exc)[:160]}"}],
+                "note": BROWSER_HELP if missing else f"Browser run failed: {type(exc).__name__}",
+            }
+
+        missing = "not installed" in (note or "").lower() or "unavailable" in (note or "").lower()
         return {
             "final": final or url,
             "ok": bool(final) and final != url,
+            "missing": missing,
             "steps": [
                 {"kind": getattr(s, "kind", "note"), "url": getattr(s, "url", ""),
                  "status": getattr(s, "status", None),
-                 "detail": to_english(getattr(s, "detail", ""))}
+                 "detail": getattr(s, "detail", "")}
                 for s in (steps or [])
             ],
-            "note": to_english(note) or "Browser run finished",
+            "note": note or "Browser run finished",
             "method": "browser",
         }
 
-    # ------------------------------------------------------------------ 对外
+    # ------------------------------------------------------------------- public
 
     async def resolve(self, url: str, allow_browser: Optional[bool] = None,
                       fresh: bool = False) -> Dict[str, Any]:
-        """``fresh=True`` skips the cache — used by the Retry button, which would
-        otherwise replay the exact failure the user just saw."""
+        """``fresh=True`` skips the cache - the Retry button would otherwise
+        replay the exact failure the user just saw."""
         allow = self.cfg.allow_browser if allow_browser is None else allow_browser
         key = (url, allow)
 
@@ -141,7 +130,8 @@ class Engine:
             out["elapsed"] = 0.0
             return out
 
-        # 同一条链接正在解析 -> 直接等它的结果，不重复打站点
+        # Same link already in flight: wait for that result instead of hitting
+        # the site twice.
         if key in self._inflight:
             return dict(await asyncio.shield(self._inflight[key]))
 
@@ -181,12 +171,12 @@ class Engine:
         data = await self.fast.resolve(url)
         data["input"] = url
 
-        # 快路径成功 -> 直接返回（通常 0.2~2s）
+        # Fast path worked -> done (usually 0.2-2s).
         if data.get("ok") and data.get("final"):
             data["elapsed"] = time.perf_counter() - t0
             return data
 
-        # 站点按 IP 拉黑：同一个出口 IP 上跑浏览器也没用，只能换 IP
+        # Site blocks our IP: a browser on the same exit IP changes nothing.
         if data.get("blocked") == "vpn":
             self.farm_needed = True
             data["needs_browser"] = False
@@ -206,7 +196,7 @@ class Engine:
                     "Browser fallback is disabled (mode=fast)"
             return data
 
-        # 浏览器兜底
+        # Browser fallback
         async with self.bsem:
             b = await asyncio.to_thread(self._browser, data.get("final") or url)
 
@@ -221,6 +211,9 @@ class Engine:
             data["ok"] = False
             data["final"] = data.get("final") or url
             data["note"] = b.get("note") or "Browser could not pass the gate"
+            if b.get("missing"):
+                data["browser_missing"] = True
+                data["method"] = "http"
         return data
 
     def _resolver_for(self, px: str, timeout: float = 10.0) -> FastResolver:
@@ -235,11 +228,11 @@ class Engine:
         return r
 
     async def _retry_via_proxy(self, url: str, t0: float) -> Optional[Dict[str, Any]]:
-        """站点按 IP 拉黑时，换一个能过墙的出口 IP 再跑一遍。"""
+        """The site blocks our IP - run it again from an exit that can pass."""
         pool = self.farm or self.pool
         if pool is None:
             return None
-        # 农场是空的：后台补货，这次请求不干等
+        # Empty farm: refill in the background, don't make this request wait.
         if self.farm is not None and not self.farm.stats().get("total"):
             asyncio.create_task(self.farm.refresh(target=url, limit=200, budget=40))
             return None
@@ -271,7 +264,8 @@ class Engine:
         return None
 
     def set_proxy(self, px: str) -> None:
-        """运行时切换出口代理（同时清缓存，避免复用失败结果）。"""
+        """Switch the exit proxy at runtime (and clear the cache so failed
+        results are not replayed)."""
         self.cfg.proxy = (px or "").strip()
         self.fast = FastResolver(
             timeout=self.cfg.http_timeout,
@@ -282,7 +276,8 @@ class Engine:
         self._cache.clear()
 
     def set_farm(self, on: bool, country: str = "") -> None:
-        """开关按国家校验的代理农场；换国家会加载对应池文件。"""
+        """Toggle the country-verified proxy farm; changing country loads that
+        country's pool file."""
         if country:
             self.cfg.proxy_country = country.strip().upper()[:2]
         self.cfg.proxy_farm = on

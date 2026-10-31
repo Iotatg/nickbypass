@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 启动 / 停止 / 查看 Nick Bypass Bot（nohup + pidfile，避免 pkill 误杀）
+# Start / stop / inspect Nick Bypass Bot (nohup + pidfile, so pkill cannot hit
+# the wrong process).
 set -u
 cd "$(dirname "$0")"
 
@@ -13,25 +14,25 @@ running() {
 
 case "${1:-start}" in
   start)
-    if running; then echo "已在运行 (pid $(cat "$PIDFILE"))"; exit 0; fi
+    if running; then echo "already running (pid $(cat "$PIDFILE"))"; exit 0; fi
     PYTHONUNBUFFERED=1 nohup python3 -m nickbot >>"$LOG" 2>&1 < /dev/null &
     echo $! > "$PIDFILE"
     sleep 5
     if running; then
-      echo "已启动 (pid $(cat "$PIDFILE"))，日志：$LOG"
+      echo "started (pid $(cat "$PIDFILE")), log: $LOG"
     else
-      echo "启动失败，日志末尾："; tail -25 "$LOG"; exit 1
+      echo "failed to start, tail of the log:"; tail -25 "$LOG"; exit 1
     fi
     ;;
   stop)
-    if running; then kill "$(cat "$PIDFILE")"; sleep 1; echo "已停止"; else echo "未运行"; fi
+    if running; then kill "$(cat "$PIDFILE")"; sleep 1; echo "stopped"; else echo "not running"; fi
     rm -f "$PIDFILE"
     ;;
   restart) "$0" stop; "$0" start ;;
   status)
-    if running; then echo "运行中 (pid $(cat "$PIDFILE"))"; else echo "未运行"; fi
-    echo "--- 日志末尾 ---"; tail -12 "$LOG" 2>/dev/null
+    if running; then echo "running (pid $(cat "$PIDFILE"))"; else echo "not running"; fi
+    echo "--- log tail ---"; tail -12 "$LOG" 2>/dev/null
     ;;
   log) tail -f "$LOG" ;;
-  *) echo "用法: $0 {start|stop|restart|status|log}"; exit 1 ;;
+  *) echo "usage: $0 {start|stop|restart|status|log}"; exit 1 ;;
 esac

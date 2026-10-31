@@ -1,4 +1,7 @@
-"""配置：全部从环境变量 / .env 读取，代码里不出现任何 token。"""
+"""Configuration: everything comes from environment variables / .env.
+
+No token is ever hard-coded here.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 try:
     from dotenv import load_dotenv
 
-    # 先读项目根目录的 .env（不管从哪个目录启动都能找到），再退回当前目录
+    # Read the project-root .env first (works no matter where the bot is started
+    # from), then fall back to the current directory.
     if not load_dotenv(BASE_DIR / ".env"):
         load_dotenv()
 except Exception:  # pragma: no cover
@@ -45,12 +49,15 @@ def _ids(name: str) -> set[int]:
 @dataclass
 class Config:
     token: str = ""
+    api_id: int = 0              # Kurigram / MTProto credentials (my.telegram.org)
+    api_hash: str = ""
+    backend: str = "auto"        # auto | kurigram | ptb
     owner_ids: set[int] = field(default_factory=set)
     logger_chat: int = 0
 
-    rate_limit: int = 6          # 每个用户每窗口允许的解析次数
-    rate_window: int = 60        # 窗口秒数
-    max_urls: int = 5            # 单条消息最多处理几个链接
+    rate_limit: int = 6          # resolutions allowed per user per window
+    rate_window: int = 60        # window length in seconds
+    max_urls: int = 5            # links handled per message
 
     http_timeout: float = 12.0
     browser_timeout: float = 20.0
@@ -62,15 +69,18 @@ class Config:
     db_path: Path = BASE_DIR / "data" / "nickbot.db"
     proxy: str = ""
     auto_proxy: bool = False
-    proxy_farm: bool = False      # 用按国家校验的代理农场（印度池）
+    proxy_farm: bool = False     # country-verified proxy farm
     proxy_country: str = "IN"
-    proxy_budget: float = 9.0   # 换 IP 重试的总时间预算（秒）
+    proxy_budget: float = 9.0    # total time budget for an IP-rotation retry
     linkresolver_home: Path = BASE_DIR.parent / "linkresolver"
 
     @classmethod
     def load(cls) -> "Config":
         c = cls()
         c.token = (os.getenv("BOT_TOKEN") or "").strip()
+        c.api_id = _int("API_ID", 0)
+        c.api_hash = (os.getenv("API_HASH") or "").strip()
+        c.backend = (os.getenv("BACKEND") or "auto").strip().lower()
         c.owner_ids = _ids("OWNER_ID")
         c.logger_chat = _int("LOGGER_CHAT_ID", 0)
         c.rate_limit = _int("RATE_LIMIT", 6)
@@ -91,17 +101,35 @@ class Config:
         c.linkresolver_home = Path(os.getenv("LINKRESOLVER_HOME") or (BASE_DIR.parent / "linkresolver"))
         return c
 
+    # ------------------------------------------------------------------ backend
+
+    def kurigram_ready(self) -> bool:
+        """Kurigram talks MTProto, so it needs an api_id/api_hash pair."""
+        return bool(self.api_id and self.api_hash)
+
+    def use_kurigram(self) -> bool:
+        if self.backend == "ptb":
+            return False
+        if self.backend == "kurigram":
+            return True
+        # auto: Kurigram when the MTProto credentials are there, otherwise PTB
+        return self.kurigram_ready()
+
+    # ------------------------------------------------------------------- checks
+
     def problems(self) -> list[str]:
         out = []
         if not self.token:
             out.append("BOT_TOKEN is not set")
         elif ":" not in self.token:
-            out.append("BOT_TOKEN looks wrong (expected 123456:ABC-DEF…)")
+            out.append("BOT_TOKEN looks wrong (expected 123456:ABC-DEF...)")
+        if self.backend == "kurigram" and not self.kurigram_ready():
+            out.append("BACKEND=kurigram needs API_ID and API_HASH (my.telegram.org)")
         if not self.owner_ids:
-            out.append("OWNER_ID is not set — admin commands will be unavailable")
+            out.append("OWNER_ID is not set - admin commands will be unavailable")
         if not (self.linkresolver_home / "linkresolver").is_dir():
             out.append(
-                f"resolver engine not found at {self.linkresolver_home}/linkresolver — "
+                f"resolver engine not found at {self.linkresolver_home}/linkresolver - "
                 "clone the whole repo, or set LINKRESOLVER_HOME"
             )
         return out
@@ -114,7 +142,7 @@ ENV_FILE = BASE_DIR / ".env"
 
 
 def set_env_value(key: str, value: str) -> None:
-    """把 KEY=value 写回 .env（保留其它行），并同步到当前进程。"""
+    """Write KEY=value back to .env (keeping the other lines) and to this process."""
     os.environ[key] = value
     path = ENV_FILE
     lines: list[str] = []
@@ -132,7 +160,7 @@ def set_env_value(key: str, value: str) -> None:
             if not replaced:
                 out.append(f"{key}={value}")
                 replaced = True
-            # 重复的同名行直接丢掉
+            # drop duplicated lines with the same key
             continue
         out.append(line)
     if not replaced:

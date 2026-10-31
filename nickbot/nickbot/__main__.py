@@ -1,8 +1,8 @@
-"""入口：
+"""Entry point:
 
-    python -m nickbot                 # 启动机器人
-    python -m nickbot --check         # 只检查配置
-    python -m nickbot --self-test URL # 不连 Telegram，直接跑解析管线并打印消息
+    python -m nickbot                 # start the bot
+    python -m nickbot --check         # config check only
+    python -m nickbot --self-test URL # run the pipeline, no Telegram connection
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _self_test(cfg: Config, url: str, browser: bool) -> int:
 
 
 def _env_report(cfg: Config) -> None:
-    """这台机器能干什么 — 部署时第一个要看的输出。"""
+    """What this machine can do - the first thing to look at when deploying."""
     import platform
 
     try:
@@ -41,18 +41,37 @@ def _env_report(cfg: Config) -> None:
     except Exception:
         has_pw = False
 
+    try:
+        import h2  # noqa: F401
+        has_h2 = True
+    except Exception:
+        has_h2 = False
+
+    try:
+        import pyrogram
+        has_kuri = True
+        kuri_ver = pyrogram.__version__
+    except Exception:
+        has_kuri = False
+        kuri_ver = ""
+
+    backend = "kurigram" if cfg.use_kurigram() else "python-telegram-bot"
     print("Environment")
     print(f"  python     : {sys.version.split()[0]} · {platform.machine()} · {platform.system()}")
-    print(f"  browser    : {'playwright installed' if has_pw else 'not installed — HTTP path only'}")
+    print(f"  backend    : {backend}"
+          f"{' ' + kuri_ver if has_kuri and backend == 'kurigram' else ''}"
+          f"{'' if has_kuri or backend != 'kurigram' else ' (pip install kurigram)'}")
+    print(f"  http/2     : {'on (h2 installed)' if has_h2 else 'off (pip install h2 to enable)'}")
+    print(f"  browser    : {'playwright installed' if has_pw else 'not installed - HTTP path only'}")
     print(f"  allow_browser={cfg.allow_browser} · proxy_farm={cfg.proxy_farm} "
           f"({cfg.proxy_country}) · proxy={'set' if cfg.proxy else 'none'}")
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="nickbot")
-    ap.add_argument("--check", action="store_true", help="检查 .env 配置")
-    ap.add_argument("--self-test", metavar="URL", help="不连 Telegram，直接解析一条链接")
-    ap.add_argument("--no-browser", action="store_true", help="self-test 时禁用浏览器")
+    ap.add_argument("--check", action="store_true", help="check the .env configuration")
+    ap.add_argument("--self-test", metavar="URL", help="resolve one link without connecting to Telegram")
+    ap.add_argument("--no-browser", action="store_true", help="disable the browser during --self-test")
     args = ap.parse_args(argv)
 
     cfg = Config.load()
@@ -61,6 +80,9 @@ def main(argv=None) -> int:
         print("Config check")
         print(f"  token      : {'set' if cfg.token else 'missing'}"
               f"{' (' + cfg.token[:6] + '…' + cfg.token[-4:] + ')' if cfg.token else ''}")
+        print(f"  api id     : {cfg.api_id or 'missing (Kurigram only)'}")
+        print(f"  api hash   : {'set' if cfg.api_hash else 'missing (Kurigram only)'}")
+        print(f"  backend    : {cfg.backend} -> {'kurigram' if cfg.use_kurigram() else 'ptb'}")
         print(f"  owner      : {sorted(cfg.owner_ids) or 'missing'}")
         print(f"  logger chat: {cfg.logger_chat or 'not set'}")
         print(f"  db         : {cfg.db_path}")
@@ -82,6 +104,8 @@ def main(argv=None) -> int:
         for p in probs:
             print("  -", p)
         print("\nCopy .env.example to .env and fill BOT_TOKEN / OWNER_ID first.")
+        if cfg.backend == "kurigram":
+            print("Kurigram also needs API_ID and API_HASH from https://my.telegram.org.")
         return 2
 
     logging.basicConfig(

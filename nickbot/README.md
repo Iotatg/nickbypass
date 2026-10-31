@@ -2,7 +2,7 @@
 
 Telegram bot that resolves shortlinks and ad-gate links to their real destination.
 
-**v3 — same engine, a lot less robot in the replies.**
+**v4 — two backends (Kurigram / PTB), and the gate handshake done properly.**
 
 ```
 ✅ Link bypassed · GPLinks
@@ -49,7 +49,7 @@ too, if you have one.
 | Stage | What happens | Typical time |
 |---|---|---|
 | **1. Fast HTTP** | Shared `httpx.AsyncClient` (HTTP/2 + keep-alive), follows the redirect chain and extracts the next hop from `meta refresh` / `location.href` / inline JSON / base64 params / forms | 0.1 – 2 s |
-| **2. Site API** | For the "GT Links" family (`vplink`, `gplinks`, `arolinks`, `liteshort`, `vipshort`, …) it calls the site's own `POST /links/go`, which returns `{"status":"success","url":"…"}` — no browser at all | 0.3 – 1 s |
+| **2. Site API** | For the "GT Links" family (`vplink`, `gplinks`, `arolinks`, `liteshort`, `vipshort`, …) it calls the site's own `POST /links/go`. The template wants a `csrfToken` cookie **and** a matching `X-CSRF-TOKEN` header (double submit, any value passes) and the countdown finished — until then it answers `{"url":"#"}`. The bot mints the pair, waits out the timer, retries, and only trusts a real `http…` URL | 1 – 6 s |
 | **3. Browser** | Only if the page really needs it (countdown, JS-built URL, click gate). Headless Chromium, ads blocked, waits out the timer, clicks Continue | 4 – 12 s |
 | **4. Proxy retry** | If the site answers with a *"VPN detected / disable VPN"* wall, the bot knows the exit IP is blacklisted and stops immediately instead of burning 30 s — then optionally retries through a proxy | — |
 
@@ -107,6 +107,32 @@ goes through the same engine. `/sites` counts what the bot **knows**, not what i
 can **try**.
 
 
+## Backends
+
+The command layer is framework-free (`transport.py` wraps whichever library is
+running), so both backends share every handler, every card and every test.
+
+| | **Kurigram** (default when configured) | **python-telegram-bot** |
+|---|---|---|
+| Protocol | MTProto | HTTP Bot API |
+| Credentials | `BOT_TOKEN` + `API_ID` + `API_HASH` | `BOT_TOKEN` only |
+| Updates | push, lower latency | long polling |
+| Install | `pip install kurigram` | already in requirements |
+
+`BACKEND=auto` (the default) picks Kurigram when `API_ID`/`API_HASH` are set and
+falls back to PTB otherwise, so a token-only deploy keeps working.
+
+To use Kurigram: open <https://my.telegram.org> → *API development tools*,
+create an app, then put the two values in `.env`:
+
+```ini
+BACKEND=kurigram
+API_ID=1234567
+API_HASH=0123456789abcdef0123456789abcdef
+```
+
+`python3 -m nickbot --check` prints which backend it will use.
+
 ## Run
 
 > Every platform — Termux/Android, VPS + systemd, Windows, macOS, Docker,
@@ -133,6 +159,8 @@ Control script:
 | Key | Default | Meaning |
 |---|---|---|
 | `BOT_TOKEN` | — | from @BotFather |
+| `BACKEND` | `auto` | `kurigram` / `ptb` / `auto` |
+| `API_ID` / `API_HASH` | — | Kurigram only, from <https://my.telegram.org> |
 | `OWNER_ID` | — | comma-separated numeric IDs |
 | `LOGGER_CHAT_ID` | — | error log chat (bot must be a member) |
 | `RATE_LIMIT` / `RATE_WINDOW` | `8` / `60` | per-user quota |
@@ -250,14 +278,20 @@ tests/
 ## Tests
 
 ```bash
+python3 tests/test_gate.py       # 19 checks — CSRF handshake, countdown, decoy anchors
 python3 tests/test_fast.py       # 19 checks — fast path, site API, VPN wall, dead destination
-python3 tests/test_offline.py    # 56 checks — extraction, routing, rate limit, DB, copy, escaping
+python3 tests/test_offline.py    # 61 checks — extraction, routing, rate limit, DB, copy, escaping
 python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer bounce
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 python3 tests/test_registry.py   # 52 checks — 2,400+ domains, lookup, terminal logic, speed
 ```
 
-162 checks, no network needed.
+186 checks, no network needed.
+
+`test_gate.py` is the one that matters for the bug people hit: a local server
+imitates a GT gate that refuses `/links/go` without the CSRF pair, answers `#`
+until the timer runs out, and carries a "sponsored" anchor to pipefitter.in.
+The resolver has to come back with the real destination and nothing else.
 
 `test_chain.py` rebuilds the real `vplink.in → pipefitter.in → destination` chain locally
 (escaped `\/` in the JS, "Please Wait.." / "Landing.." copy) and proves the resolver

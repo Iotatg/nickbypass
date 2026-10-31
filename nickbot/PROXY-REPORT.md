@@ -17,7 +17,7 @@ the problem immediately:
 whoever's LAN produced the list; from the public internet they are unroutable.
 A "350 proxies / 200 TB bandwidth" paste built on 10.x addresses cannot work, no
 matter how fast the line is. The harvester now rejects them explicitly
-(`tests/test_farm.py` → "拒绝 10.x 私网").
+(`tests/test_farm.py` -> "rejects 10.x private range").
 
 ## 2. Can I "build" Indian proxies?
 

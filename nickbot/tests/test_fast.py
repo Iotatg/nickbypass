@@ -1,10 +1,11 @@
-"""快路径（gates.FastResolver）离线测试。
+"""Fast path (gates.FastResolver) offline tests.
 
-用一个本地 HTTP 服务模拟 "GT Links" 广告门：
-    GET  /<slug>      返回带 /links/go 的页面（并下发 cookie）
+A local HTTP server imitates a "GT Links" ad gate:
+    GET  /<slug>      returns a page with /links/go (and sets cookies)
     POST /links/go    {"status":"success","url":"https://target.example/final"}
 
-验证：站点 API 直取、meta refresh、JS 跳转、VPN 墙识别、404 终点。
+Covers: direct site API, meta refresh, JS redirect, VPN wall detection,
+404 destination.
 """
 
 from __future__ import annotations
@@ -91,49 +92,49 @@ def main() -> int:
 
     async def run():
         r = FastResolver(timeout=8)
-        print("\n[1] 站点 API 直取（GT Links 流程）")
+        print("\n[1] direct site API (GT Links flow)")
         d = await r.resolve(f"{base}/gate/abc123")
         check("ok", d["ok"], d.get("note"))
-        check("命中站点 API", d["method"] == "gate", d["method"])
-        check("拿到目标", d["final"] == TARGET, d["final"])
-        check("用时 < 2s", d["elapsed"] < 2.0, f"{d['elapsed']:.2f}s")
+        check("site API hit", d["method"] == "gate", d["method"])
+        check("destination obtained", d["final"] == TARGET, d["final"])
+        check("took < 2s", d["elapsed"] < 2.0, f"{d['elapsed']:.2f}s")
 
         print("\n[2] meta refresh")
         d = await r.resolve(f"{base}/meta")
         check("ok", d["ok"])
-        check("终点正确", d["final"] == "https://dest.example/a", d["final"])
+        check("destination is correct", d["final"] == "https://dest.example/a", d["final"])
 
         print("\n[3] JS location")
         d = await r.resolve(f"{base}/js")
         check("ok", d["ok"])
-        check("终点正确", d["final"] == "https://dest.example/b", d["final"])
+        check("destination is correct", d["final"] == "https://dest.example/b", d["final"])
 
-        print("\n[4] VPN 墙识别（不再浪费 30s 开浏览器）")
+        print("\n[4] VPN wall detection (no more 30s browser waste)")
         d = await r.resolve(f"{base}/vpn")
-        check("失败", not d["ok"])
-        check("标记 blocked=vpn", d["blocked"] == "vpn", d["blocked"])
-        check("提示代理", "residential proxy" in d["note"].lower(), d["note"][:60])
-        check("用时 < 1s", d["elapsed"] < 1.0, f"{d['elapsed']:.2f}s")
+        check("failed", not d["ok"])
+        check("marked blocked=vpn", d["blocked"] == "vpn", d["blocked"])
+        check("mentions the proxy", "residential proxy" in d["note"].lower(), d["note"][:60])
+        check("took < 1s", d["elapsed"] < 1.0, f"{d['elapsed']:.2f}s")
 
-        print("\n[5] 短链跳到已失效终点")
+        print("\n[5] short link to a dead destination")
         d = await r.resolve(f"{base}/dead")
-        check("仍算解析成功", d["ok"], d.get("note"))
-        check("保留终点地址", d["final"] == "https://dead.example/gone", d["final"])
+        check("still counts as resolved", d["ok"], d.get("note"))
+        check("keeps the destination address", d["final"] == "https://dead.example/gone", d["final"])
 
-        print("\n[6] 并发 5 条互不阻塞")
+        print("\n[6] 5 concurrent links do not block each other")
         import time as _t
         t0 = _t.perf_counter()
         res = await asyncio.gather(*[r.resolve(f"{base}/gate/c{i}") for i in range(5)])
         dt = _t.perf_counter() - t0
-        check("全部成功", all(x["ok"] for x in res))
-        check("总耗时 < 2s", dt < 2.0, f"{dt:.2f}s")
+        check("all succeeded", all(x["ok"] for x in res))
+        check("total time < 2s", dt < 2.0, f"{dt:.2f}s")
 
         await r.aclose()
 
     asyncio.run(run())
     srv.shutdown()
 
-    print("\n[7] 短链站自曝链接失效（bit.ly 那种警告页）")
+    print("\n[7] shortener admits the link is dead (the bit.ly warning page)")
     from nickbot import gates as G
 
     real = G._site_of
@@ -141,12 +142,12 @@ def main() -> int:
         if "bit.ly" in url else None
     warn = ("<html><head><title>Warning!</title></head><body>"
             "There might be a problem with the requested link</body></html>")
-    check("短链站 -> 判定失效", G._dead_link(warn, "https://bit.ly/3xYz") is True)
-    check("普通站点 -> 不误判", G._dead_link(warn, "https://example.com/blog/x") is False)
-    check("短链站正常页 -> 不算失效", G._dead_link("<html>hello</html>", "https://bit.ly/x") is False)
+    check("shortener -> judged dead", G._dead_link(warn, "https://bit.ly/3xYz") is True)
+    check("normal site -> not misjudged", G._dead_link(warn, "https://example.com/blog/x") is False)
+    check("shortener normal page -> not dead", G._dead_link("<html>hello</html>", "https://bit.ly/x") is False)
     G._site_of = real
 
-    print(f"\n结果：{ok} 通过 / {fail} 失败")
+    print(f"\nResult: {ok} passed / {fail} failed")
     return 0 if fail == 0 else 1
 
 

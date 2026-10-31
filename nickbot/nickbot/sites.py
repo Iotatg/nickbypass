@@ -1,15 +1,17 @@
-"""站点注册表：认得这个域名，就知道该走哪条路。
+"""Site registry: recognise the domain, know which route to take.
 
-"支持"在这里有两层意思，别混：
+"Supported" means two different things here, and mixing them up is the easy mistake:
 
-* **认得出** —— 域名在表里，机器人能报出站点名，也不会把广告页当成终点。
-  这一层有几千个域名，来自公开短链名单（见 ``registry.py`` 与
+* **recognised** - the domain is in the table, so the bot can name the site and
+  will not mistake its ad page for a destination. Thousands of domains, taken
+  from public shortener lists (see ``registry.py`` and
   ``tools/build_sites.py``）。
-* **有专属策略** —— ``gt`` / ``gate`` / ``short`` 三种，决定是直接打站点 API、
-  还是必须上浏览器。这一层是手工维护的，百来个。
+* **has a dedicated strategy** - one of ``gt`` / ``gate`` / ``short``, which
+decides whether we call the site API or need a browser. Hand-maintained, ~180.
 
-表里没有的域名照样能解析 —— 通用引擎不认识它，但会用同一套规则试。
-所以 ``/sites`` 的数字是"认得多少"，不是"只能解析多少"。
+A domain that is not in the table still gets resolved: the generic engine does
+not know it by name, but it tries the same rules. So the number in ``/sites`` is
+"how many I recognise", not "how many I can resolve".
 """
 
 from __future__ import annotations
@@ -20,10 +22,10 @@ from urllib.parse import urlsplit
 
 from . import registry
 
-KIND_GATE = "gate"      # 倒计时 / 按钮广告门，浏览器必需
-KIND_GT = "gt"          # 同模板站点，POST /links/go 直接拿终点
-KIND_SHORT = "short"    # 纯 301/302，不用浏览器
-KIND_LISTED = "listed"  # 只认得：是短链站，策略交给通用引擎
+KIND_GATE = "gate"      # countdown / button ad gate, browser required
+KIND_GT = "gt"          # shared template, POST /links/go hands over the destination
+KIND_SHORT = "short"    # plain 301/302, no browser needed
+KIND_LISTED = "listed"  # recognised only: a shortener, strategy left to the engine
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,7 @@ class Site:
 
     @property
     def needs_browser(self) -> Optional[bool]:
-        """None = 不确定，让引擎自己判断（和未知域名同等待遇）。"""
+        """None = not sure, let the engine decide (same treatment as an unknown domain)."""
         if self.kind == KIND_SHORT:
             return False
         if self.kind == KIND_LISTED:
@@ -43,17 +45,18 @@ class Site:
         return True
 
 
-# 手工维护的那一层
+# the hand-maintained layer
 CURATED: tuple[Site, ...] = tuple(
     Site(slug=d, name=n, kind=k) for d, n, k in registry.CURATED
 )
 _BY_SLUG: Dict[str, Site] = {s.slug: s for s in CURATED}
 
-# 生成的那一层（几千个，只带域名）
+# the generated layer (thousands of domains, domain only)
 LISTED: tuple[str, ...] = registry.bulk_domains()
 _LISTED_SET = frozenset(LISTED)
 
-# 品牌名 -> 站点。用来兜住换后缀的镜像站：gplinks.co / gplinks.xyz 都算 GPLinks
+# brand name -> site. Catches mirror domains that swap the suffix:
+# gplinks.co and gplinks.xyz are both GPLinks
 _BRANDS: Dict[str, Site] = {}
 for _s in CURATED:
     _brand = _s.slug.split(".")[0]
@@ -81,18 +84,19 @@ def lookup(url: str) -> Optional[Site]:
     h = host_of(url)
     if not h:
         return None
-    # 1) 精确 / 上级域名
+    # 1) exact / parent domain
     for cand in _walk(h):
         s = _BY_SLUG.get(cand)
         if s is not None:
             return s
-    # 2) 换后缀的镜像：只看第一段，且品牌名够长，避免误伤
+    # 2) suffix-swapped mirrors: first label only, and only for long enough brands,
+#    so a random subdomain cannot collide
     labels = h.split(".")
     if labels:
         s = _BRANDS.get(labels[0])
         if s is not None:
             return s
-    # 3) 生成名单
+    # 3) generated list
     for cand in _walk(h):
         if cand in _LISTED_SET:
             return Site(slug=cand, name=cand, kind=KIND_LISTED)
@@ -108,7 +112,7 @@ def is_scraper_only(url: str) -> Optional[str]:
 
 
 def _short_code(url: str) -> bool:
-    """``/abc123`` 这种一段式短码。深路径（/blog/post-1）说明是内容页。"""
+    """A one-segment short code like ``/abc123``. A deep path (/blog/post-1) means a content page."""
     try:
         path = urlsplit(url).path.strip("/")
     except Exception:
@@ -119,11 +123,12 @@ def _short_code(url: str) -> bool:
 
 
 def is_gate(url: str) -> bool:
-    """还停在短链 / 广告站上吗？
+    """Are we still on the shortener / ad site?
 
-    手写的 gate / gt 一律算；其余域名只在 URL 长得像短码（``/abc123``）时才算。
-    这样 ``shrtfly.com/abc`` 不会被当成终点，而 ``某站.com/blog/post`` 不会
-    被误杀 —— 用户可能就是把某个内容页当链接发进来的。
+    Hand-written gate / gt entries always count. Other domains only count when
+    the URL looks like a short code (``/abc123``), so ``shrtfly.com/abc`` is not
+    treated as a destination while ``some-site.com/blog/post`` is not killed by
+    mistake - the user may well have pasted a content page on purpose.
     """
     s = lookup(url)
     if s is None:
@@ -134,7 +139,7 @@ def is_gate(url: str) -> bool:
 
 
 def needs_browser(url: str) -> bool:
-    """要不要给浏览器兜底留机会。未知域名一律 True（宁可慢，也别漏）。"""
+    """Should the browser fallback get a shot? Unknown domains: always yes (rather slow than wrong)."""
     s = lookup(url)
     if s is None:
         return True
@@ -200,7 +205,7 @@ def supported_text(limit: int = 48) -> str:
 
 
 def search_text(q: str, limit: int = 12) -> str:
-    """``/sites gplinks`` —— 按名字或域名找。"""
+    """``/sites gplinks`` - look a site up by name or domain."""
     q = (q or "").strip().lower()
     if not q:
         return supported_text()
@@ -210,7 +215,7 @@ def search_text(q: str, limit: int = 12) -> str:
         if q in s.slug or q in s.name.lower():
             hits.append(f"<b>{s.name}</b> · <code>{s.slug}</code> · {_kind_label(s.kind)}")
 
-    # 手工层已经答上了就别拿生成层灌水：补三条封顶
+    # If the curated layer answered, do not flood it with generated entries: cap at three.
     extra = 3 if hits else 8
     for d in LISTED:
         if extra <= 0 or len(hits) >= limit:

@@ -72,7 +72,10 @@ def _meta(data: Dict[str, Any]) -> str:
         bits.append("instant · from cache")
     else:
         bits.append(_seconds(float(data.get("elapsed") or 0.0)))
-    bits.append(_method(data.get("method", "")))
+    if data.get("browser_missing"):
+        bits.append("no browser installed")
+    else:
+        bits.append(_method(data.get("method", "")))
     hops = len(data.get("steps") or [])
     if hops:
         bits.append(_hops(hops))
@@ -164,6 +167,16 @@ def _explain(data: Dict[str, Any]) -> tuple[str, str, bool]:
             "PROXY works too, if you have one.",
             True,
         )
+    if data.get("browser_missing") or "playwright isn't installed" in low or \
+            "browser engine unavailable" in low:
+        return (
+            "This gate needs a real browser, and Playwright isn't installed on "
+            "the machine running the bot.",
+            "Run <code>pip install playwright</code> then "
+            "<code>playwright install chromium</code>, restart the bot, and tap "
+            "<b>Try browser</b> again. Until then only the HTTP path works.",
+            True,
+        )
     if "disabled" in low and "browser" in low:
         return (
             "This gate needs a real browser, but you're in fast mode.",
@@ -211,7 +224,7 @@ def _explain(data: Dict[str, Any]) -> tuple[str, str, bool]:
             "<code>/mode browser</code>, then paste the link again.",
             True,
         )
-    if any(k in low for k in ("no destination", "ended", "loop")):
+    if any(k in low for k in ("no destination", "ended", "loop", "ad page")):
         return (
             "The chain stopped on an ad page that never points anywhere real.",
             "Retry in a few minutes — these chains rotate their targets.",

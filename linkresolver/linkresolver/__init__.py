@@ -1,6 +1,6 @@
-"""linkresolver —— 短链 / 广告门解析器。
+"""linkresolver - short link / ad gate resolver.
 
-用法：
+Usage:
     from linkresolver import resolve
     r = resolve("https://tinyurl.com/xxxx")
     print(r.final_url)

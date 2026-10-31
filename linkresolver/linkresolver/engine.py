@@ -1,4 +1,4 @@
-"""解析引擎：HTTP 快路径（手动跟跳，逐跳记录）+ 浏览器兜底。"""
+"""Resolution engine: fast HTTP path (manual hop-by-hop follow) + browser fallback."""
 
 from __future__ import annotations
 
@@ -64,12 +64,12 @@ def is_blocked(status: int, body: str) -> Tuple[bool, str]:
         low = body[:200000].lower()
         for m in BLOCK_MARKERS:
             if m in low:
-                return True, f"HTTP {status} + 反爬特征「{m}」"
-        return True, f"HTTP {status}（被拒绝/限流）"
+                return True, f"HTTP {status} + anti-bot marker '{m}'"
+        return True, f"HTTP {status} (refused / rate limited)"
     low = body[:200000].lower()
     for m in BLOCK_MARKERS:
         if m in low and len(low) < 120000:
-            return True, f"反爬/人机验证页「{m}」"
+            return True, f"Anti-bot / verification page '{m}'"
     return False, ""
 
 
@@ -98,14 +98,14 @@ class Resolver:
         res = Result(input_url=raw_url)
 
         if not url:
-            res.note = "空的 URL"
+            res.note = "Empty URL"
             return res
 
-        # 直接强制浏览器模式
+        # Forced browser mode
         if self.force_browser and self.allow_browser:
             from .browser import BrowserResolver
 
-            res.steps.append(Step("note", url, detail="强制浏览器模式，跳过 HTTP 快路径"))
+            res.steps.append(Step("note", url, detail="Forced browser mode, skipping the HTTP fast path"))
             b_url, b_steps, b_note = BrowserResolver(
                 headless=self.headless, timeout=self.browser_timeout
             ).resolve(url)
@@ -131,7 +131,7 @@ class Resolver:
         try:
             for _hop in range(self.max_hops):
                 if url in visited:
-                    res.steps.append(Step("note", url, detail="检测到循环跳转，停止"))
+                    res.steps.append(Step("note", url, detail="Redirect loop detected, stopping"))
                     break
                 visited.add(url)
 
@@ -143,10 +143,10 @@ class Resolver:
                     resp = client.get(url)
                 except Exception as exc:
                     res.steps.append(
-                        Step("error", url, detail=f"请求失败：{type(exc).__name__}: {exc}", elapsed=time.time() - t)
+                        Step("error", url, detail=f"Request failed: {type(exc).__name__}: {exc}", elapsed=time.time() - t)
                     )
                     res.blocked = True
-                    res.note = "请求失败（域名不可达 / 超时 / TLS 问题）"
+                    res.note = "Request failed (unreachable host / timeout / TLS)"
                     break
 
                 ctype = resp.headers.get("content-type", "")
@@ -161,18 +161,18 @@ class Resolver:
                     )
                 )
 
-                # 1) 重定向
+                # 1) redirect
                 if resp.is_redirect or resp.status_code in (301, 302, 303, 307, 308):
                     loc = resp.headers.get("location", "")
                     nxt = up.urljoin(url, loc) if loc else ""
                     if not nxt:
-                        res.note = "重定向缺少 Location"
+                        res.note = "Redirect without a Location header"
                         break
                     res.steps.append(Step("redirect", nxt, status=resp.status_code, detail=f"HTTP {resp.status_code}"))
                     referer, url = url, nxt
                     continue
 
-                # 2) 反爬 / 人机验证
+                # 2) anti-bot / verification
                 blocked, why = is_blocked(resp.status_code, body)
                 if blocked:
                     res.steps.append(Step("blocked", url, status=resp.status_code, detail=why))
@@ -181,15 +181,15 @@ class Resolver:
                     res.note = why
                     break
 
-                # 3) 非 HTML：直接当终点（文件/图片/接口）
+                # 3) not HTML: treat it as the destination (file / image / API)
                 if body == "":
                     res.final_url = url
                     res.method = "http"
                     res.ok = True
-                    res.note = res.note or f"直接返回 {ctype.split(';')[0] or '二进制'}，非跳转页"
+                    res.note = res.note or f"Returned {ctype.split(';')[0] or 'binary'} directly, not a redirect page"
                     break
 
-                # 4) 从页面里找下一跳
+                # 4) look for the next hop inside the page
                 found = R.extract_next(url, body)
                 if found:
                     nxt, why, _fields = found
@@ -199,12 +199,12 @@ class Resolver:
                         referer, url = url, nxt
                         continue
 
-                # 5) 提取不出来：判断是"到终点了"还是"卡在广告门"
+                # 5) nothing to extract: destination, or still stuck on the gate?
                 host = R.host_of(url)
                 input_host = R.host_of(normalize(raw_url))
                 low = body.lower()
 
-                # 广告门特征打分：计时器 + 倒计时文案 + 继续按钮 + 脚本
+                # Gate score: timers + countdown copy + continue button + script
                 score = 0
                 if "settimeout" in low or "setinterval" in low:
                     score += 2
@@ -225,25 +225,25 @@ class Resolver:
                         Step(
                             "note",
                             url,
-                            detail="页面需要 JS 计时 / 点击才能出终点"
-                            + ("（该域名在已知需浏览器名单中）" if R.matches(host, R.NEEDS_BROWSER) else ""),
+                            detail="Page needs a JS timer / click before it reveals the destination"
+                            + (" (domain is on the known browser-only list)" if R.matches(host, R.NEEDS_BROWSER) else ""),
                         )
                     )
-                    res.note = R.HINTS.get(host, "需要浏览器执行 JS 才能拿到终点")
+                    res.note = R.HINTS.get(host, "Needs a browser to run the JavaScript that builds the destination")
                 elif stayed:
-                    # 还停在短链/广告站自己的页面上，说明没解析出来（失效链接、错误页、登录墙）
+                    # Still on the shortener's own page: unresolved (dead link, error page, login wall)
                     res.final_url = url
                     res.method = "http"
                     res.ok = False
-                    res.note = "停留在短链站自己的页面上，未解析出终点（链接可能已失效或需要登录）"
+                    res.note = "Still on the shortener's own page, no destination found (link may be dead or need a login)"
                 else:
                     res.final_url = url
                     res.method = "http"
                     res.ok = True
-                    res.note = res.note or "已到达终点（页面中没有更多跳转）"
+                    res.note = res.note or "Reached the destination (nothing left to follow)"
                 break
 
-            # 6) 浏览器兜底
+            # 6) browser fallback
             if needs_browser and self.allow_browser:
                 from .browser import BrowserResolver
 
@@ -254,13 +254,13 @@ class Resolver:
                 if b_url:
                     res.final_url = b_url
                     res.ok = b_url != normalize(raw_url)
-                    res.note = b_note or "浏览器模式解析完成"
+                    res.note = b_note or "Resolved in browser mode"
                 else:
                     res.final_url = url
                     res.ok = False
-                    res.note = b_note or "浏览器模式也没能拿到终点（可能需要登录 / 验证码 / 地区限制）"
+                    res.note = b_note or "Browser mode did not reach the destination either (login / captcha / region block)"
             elif needs_browser and not self.allow_browser:
-                res.note = ((res.note + " · ") if res.note else "") + "该页需要浏览器模式（加 --browser 或在网页里勾选）"
+                res.note = ((res.note + " · ") if res.note else "") + "This page needs browser mode (add --browser, or tick the box in the web UI)"
         finally:
             client.close()
 

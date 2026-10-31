@@ -1,17 +1,18 @@
-"""端到端链路测试：复刻 vplink.in 的真实广告链形状。
+"""End-to-end chain test: reproduces the real ad chain shape of vplink.in.
 
-真实链路（2026-10 实测，来自 vplink.in/nAKfh）：
+The real chain (measured 2026-10, from vplink.in/nAKfh):
 
     vplink.in/nAKfh            200  "Please Wait.. Opening Link"
                                  window.location.href = "https:\\/\\/pipefitter.in\\/..."
     pipefitter.in/...          200  "Landing.."  "Generating Link"
                                  window.location.href = "https:\\/\\/pipefitter.in\\/article\\/..."
     ...
-    auth.pwasmultiverse.workers.dev/generate?code=...   终点
+    auth.pwasmultiverse.workers.dev/generate?code=...   destination
 
-这里用本地服务复刻前两跳的形状（JS 里 URL 带 \\/ 转义、文案含 "Please Wait"
-和 "Landing.."），验证解析器能不能一路跟到终点。能跟到，就说明 vplink 失败
-的唯一原因是出口 IP 被墙，而不是引擎不认这种页面。
+The local server below reproduces the shape of the first two hops (escaped
+slashes in the JS URL, "Please Wait" / "Landing.." copy) to prove the resolver
+can follow the chain all the way to the destination. If it can, then the only
+reason vplink fails in production is a blocked exit IP, not the page format.
 """
 
 from __future__ import annotations
@@ -59,12 +60,14 @@ window.location.href = "http:\\/\\/127.0.0.1:%d\\/article\\/best-premium-cards\\
 <body><h1>You reached the destination</h1><p>code accepted</p></body></html>""",
 }
 
-# 终点页把用户弹回广告层（真实链路里 targetssc.com -> pipefitter.in 就是这样）
+# The destination bounces the user back into the ad layer (targetssc.com ->
+    # pipefitter.in does exactly that in the real chain)
 REDIRECTS = {
     "/clean": "https://pipefitter.in/studyinsurances/",
 }
 
-# 从"广告门"跳到 localhost 上的终点页（localhost 与 127.0.0.1 算不同站点）
+# Jump from the ad gate to a destination page on localhost (localhost and
+    # 127.0.0.1 count as different sites)
 PAGES["/bounce"] = """<!DOCTYPE html><html><head><title>Please Wait..</title></head>
 <body><h2>Opening Link</h2>
 <script>window.location.href = "http://localhost:%d/clean";</script></body></html>""" % PORT
@@ -115,38 +118,39 @@ async def main() -> int:
 
     r = FastResolver(timeout=8, max_hops=12)
     try:
-        print("\n[1] 复刻 vplink 形状的三跳链路")
+        print("\n[1] three-hop chain shaped like vplink")
         t = time.perf_counter()
         d = await r.resolve(f"{BASE}/nAKfh")
         took = time.perf_counter() - t
 
-        check("解析成功", d["ok"], d.get("note", ""))
-        check("终点是 /generate?code=…", d["final"].endswith("/generate?code=N8BCN7VQDAZFL48O"), d["final"])
-        check("跳数 >= 3", len(d["steps"]) >= 3, str(len(d["steps"])))
-        check("用时 < 2s", took < 2.0, f"{took:.2f}s")
-        check("没有被误判成需要浏览器", not d.get("needs_browser"), str(d.get("needs_browser")))
+        check("resolved", d["ok"], d.get("note", ""))
+        check("destination is /generate?code=...", d["final"].endswith("/generate?code=N8BCN7VQDAZFL48O"), d["final"])
+        check("hops >= 3", len(d["steps"]) >= 3, str(len(d["steps"])))
+        check("took < 2s", took < 2.0, f"{took:.2f}s")
+        check("not misjudged as needing a browser", not d.get("needs_browser"), str(d.get("needs_browser")))
 
-        print("\n[2] 转义斜杠 \\/ 必须还原")
-        check("没有残留反斜杠", "\\/" not in d["final"], d["final"])
+        print("\n[2] escaped slashes \\/ must be restored")
+        check("no stray backslashes", "\\/" not in d["final"], d["final"])
 
-        print("\n[3] 第二次走缓存以外仍然正确（新实例）")
+        print("\n[3] still correct on a second, uncached run (new instance)")
         r2 = FastResolver(timeout=8)
         d2 = await r2.resolve(f"{BASE}/landing")
-        check("从中途站继续也能到终点", d2["ok"] and d2["final"].endswith("code=N8BCN7VQDAZFL48O"), d2["final"])
+        check("resuming from a waypoint still reaches the destination", d2["ok"] and d2["final"].endswith("code=N8BCN7VQDAZFL48O"), d2["final"])
         await r2.aclose()
 
-        print("\n[4] 终点把用户弹回广告层时，不能把广告页当结果")
-        # localhost 与 127.0.0.1 视为不同站点：/clean 已经是"终点"，
-        # 它 301 到 pipefitter.in（广告层）时必须停在 /clean。
+        print("\n[4] a destination bouncing back into the ad layer is not the result")
+        # localhost and 127.0.0.1 count as different sites: /clean already is the
+        # destination,
+        # so a 301 to pipefitter.in (the ad layer) has to stop at /clean.
         d3 = await r2.resolve(f"{BASE}/bounce")
-        check("解析成功", d3["ok"], d3.get("note", ""))
-        check("终点停在 /clean", d3["final"].endswith("/clean"), d3["final"])
-        check("没有跟到 pipefitter", "pipefitter" not in d3["final"], d3["final"])
+        check("resolved", d3["ok"], d3.get("note", ""))
+        check("destination stops at /clean", d3["final"].endswith("/clean"), d3["final"])
+        check("did not follow through to pipefitter", "pipefitter" not in d3["final"], d3["final"])
     finally:
         await r.aclose()
         srv.shutdown()
 
-    print(f"\n结果：{passed} 通过 / {failed} 失败")
+    print(f"\nResult: {passed} passed / {failed} failed")
     return 0 if failed == 0 else 1
 
 

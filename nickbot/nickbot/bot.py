@@ -1,104 +1,224 @@
-"""组装 Application。"""
+"""Build and run the bot.
+
+Two backends, one command table:
+
+* **Kurigram** (MTProto) - the default when API_ID / API_HASH are present.
+  Faster updates, no Bot API polling limits.
+* **python-telegram-bot** (HTTP Bot API) - the fallback. Token only, nothing
+  else to sign up for.
+
+Pick explicitly with ``BACKEND=kurigram`` or ``BACKEND=ptb``; ``auto`` (the
+default) takes Kurigram when the MTProto credentials exist.
+"""
 
 from __future__ import annotations
 
 import asyncio
-
-from telegram import BotCommand, BotCommandScopeChat, Update
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    MessageHandler,
-    filters,
-)
+from typing import Callable, List, Tuple
 
 from . import handlers as H
 from .config import Config
 from .handlers import Runtime
 
-USER_COMMANDS = [
-    BotCommand("start", "how this works"),
-    BotCommand("bypass", "resolve a link — or just paste it"),
-    BotCommand("mode", "fast · auto · browser"),
-    BotCommand("sites", "known sites, /sites gplinks to search"),
-    BotCommand("status", "engine health and cache"),
-    BotCommand("ip", "do I need a proxy here?"),
-    BotCommand("id", "your Telegram ID"),
+# (command, handler, menu description)
+COMMANDS: List[Tuple[str, Callable, str]] = [
+    ("start", H.cmd_start, "how this works"),
+    ("bypass", H.cmd_bypass, "resolve a link — or just paste it"),
+    ("mode", H.cmd_mode, "fast · auto · browser"),
+    ("sites", H.cmd_supported, "known sites, /sites gplinks to search"),
+    ("status", H.cmd_status, "engine health and cache"),
+    ("ip", H.cmd_ip, "do I need a proxy here?"),
+    ("id", H.cmd_id, "your Telegram ID"),
+    ("stats", H.cmd_stats, "traffic and success rate"),
+    ("users", H.cmd_users, "how many people use it"),
+    ("broadcast", H.cmd_broadcast, "message every user"),
+    ("ban", H.cmd_ban, "block a user"),
+    ("unban", H.cmd_unban, "let a user back in"),
+    ("proxy", H.cmd_proxy, "exit IP and local pool"),
 ]
 
-OWNER_COMMANDS = USER_COMMANDS + [
-    BotCommand("stats", "traffic and success rate"),
-    BotCommand("users", "how many people use it"),
-    BotCommand("broadcast", "message every user"),
-    BotCommand("ban", "block a user"),
-    BotCommand("unban", "let a user back in"),
-    BotCommand("proxy", "exit IP and local pool"),
-]
+ALIASES = {"help": H.cmd_help, "b": H.cmd_bypass, "supported": H.cmd_supported}
 
 
-async def _post_init(app: Application) -> None:
-    """启动后台任务：代理农场保温；顺便把命令菜单写好。"""
-    r = app.bot_data["rt"]
+def _user_menu() -> List[Tuple[str, str]]:
+    return [(c, d) for c, _, d in COMMANDS[:7]]
 
-    try:
-        await app.bot.set_my_commands(USER_COMMANDS)
-        for oid in r.cfg.owner_ids:
+
+def _owner_menu() -> List[Tuple[str, str]]:
+    return [(c, d) for c, _, d in COMMANDS]
+
+
+# ------------------------------------------------------------------------- PTB
+
+
+def build_ptb(cfg: Config, rt: Runtime):
+    """Build the python-telegram-bot Application without starting it."""
+    from telegram import BotCommand, BotCommandScopeChat
+    from telegram.ext import (
+        Application,
+        CallbackQueryHandler,
+        CommandHandler,
+        MessageHandler,
+        filters,
+    )
+
+    from .transport import PTBEvent
+
+    def wrap(fn):
+        async def handler(update, context):
             try:
-                await app.bot.set_my_commands(
-                    OWNER_COMMANDS, scope=BotCommandScopeChat(chat_id=oid)
-                )
-            except Exception:
-                pass
-    except Exception:
-        pass
+                await fn(PTBEvent(update, context, rt))
+            except Exception as exc:  # never let one bad update kill polling
+                await H.report_error(exc)
 
-    if r.engine.farm is not None:
-        app.bot_data["farm_task"] = asyncio.create_task(H._farm_loop(r))
+        handler.__name__ = getattr(fn, "__name__", "handler")
+        return handler
 
+    async def post_init(app: Application) -> None:
+        try:
+            await app.bot.set_my_commands([BotCommand(c, d) for c, d in _user_menu()])
+            for oid in rt.cfg.owner_ids:
+                try:
+                    await app.bot.set_my_commands(
+                        [BotCommand(c, d) for c, d in _owner_menu()],
+                        scope=BotCommandScopeChat(chat_id=oid),
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        if rt.engine.farm is not None:
+            app.bot_data["farm_task"] = asyncio.create_task(H._farm_loop(rt))
 
-async def _post_shutdown(app: Application) -> None:
-    t = app.bot_data.pop("farm_task", None)
-    if t is not None:
-        t.cancel()
-        await asyncio.gather(t, return_exceptions=True)
+    async def post_shutdown(app: Application) -> None:
+        t = app.bot_data.pop("farm_task", None)
+        if t is not None:
+            t.cancel()
+            await asyncio.gather(t, return_exceptions=True)
 
-
-def build(cfg: Config) -> Application:
     app = (
         Application.builder()
         .token(cfg.token)
         .concurrent_updates(True)
-        .post_init(_post_init)
-        .post_shutdown(_post_shutdown)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
-    app.bot_data["rt"] = Runtime(cfg)
+    app.bot_data["rt"] = rt
 
-    app.add_handler(CommandHandler("start", H.cmd_start))
-    app.add_handler(CommandHandler("help", H.cmd_help))
-    app.add_handler(CommandHandler("id", H.cmd_id))
-    app.add_handler(CommandHandler("mode", H.cmd_mode))
-    app.add_handler(CommandHandler("proxy", H.cmd_proxy))
-    app.add_handler(CommandHandler("supported", H.cmd_supported))
-    app.add_handler(CommandHandler("sites", H.cmd_supported))
-    app.add_handler(CommandHandler("status", H.cmd_status))
-    app.add_handler(CommandHandler("ip", H.cmd_ip))
-    app.add_handler(CommandHandler("bypass", H.cmd_bypass))
-    app.add_handler(CommandHandler("b", H.cmd_bypass))
+    for name, fn, _ in COMMANDS:
+        app.add_handler(CommandHandler(name, wrap(fn)))
+    for name, fn in ALIASES.items():
+        app.add_handler(CommandHandler(name, wrap(fn)))
 
-    app.add_handler(CommandHandler("stats", H.cmd_stats))
-    app.add_handler(CommandHandler("users", H.cmd_users))
-    app.add_handler(CommandHandler("ban", H.cmd_ban))
-    app.add_handler(CommandHandler("unban", H.cmd_unban))
-    app.add_handler(CommandHandler("broadcast", H.cmd_broadcast))
-
-    app.add_handler(CallbackQueryHandler(H.on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, H.on_text))
-    app.add_error_handler(H.on_error)
+    app.add_handler(CallbackQueryHandler(wrap(H.on_callback)))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, wrap(H.on_text)))
     return app
 
 
-def run(cfg: Config) -> None:
-    app = build(cfg)
+def run_ptb(cfg: Config, rt: Runtime) -> None:
+    from telegram import Update
+
+    app = build_ptb(cfg, rt)
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+
+# -------------------------------------------------------------------- Kurigram
+
+
+def build_kurigram(cfg: Config, rt: Runtime):
+    """Build the Kurigram Client and register handlers (no connection yet)."""
+    from pyrogram import Client, filters
+    from pyrogram.handlers import CallbackQueryHandler, MessageHandler
+    from pyrogram.types import BotCommand, BotCommandScopeChat
+
+    from .transport import KuriEvent
+
+    app = Client(
+        "nickbot",
+        api_id=cfg.api_id,
+        api_hash=cfg.api_hash,
+        bot_token=cfg.token,
+        in_memory=True,          # bots have nothing to persist between runs
+        workers=8,
+    )
+
+    def wrap(fn):
+        async def handler(client, update):
+            try:
+                await fn(KuriEvent(client, update, rt))
+            except Exception as exc:
+                await H.report_error(exc)
+
+        handler.__name__ = getattr(fn, "__name__", "handler")
+        return handler
+
+    def wrap_cb(fn):
+        async def handler(client, query):
+            try:
+                await fn(KuriEvent(client, query, rt, is_callback=True))
+            except Exception as exc:
+                await H.report_error(exc)
+
+        handler.__name__ = "callback"
+        return handler
+
+    for name, fn, _ in COMMANDS:
+        app.add_handler(MessageHandler(wrap(fn), filters.command(name)))
+    for name, fn in ALIASES.items():
+        app.add_handler(MessageHandler(wrap(fn), filters.command(name)))
+
+    app.add_handler(MessageHandler(wrap(H.on_text), filters.text & ~filters.regex(r"^/")))
+    app.add_handler(CallbackQueryHandler(wrap_cb(H.on_callback)))
+    return app
+
+
+def run_kurigram(cfg: Config, rt: Runtime) -> None:
+    from pyrogram import idle
+
+    app = build_kurigram(cfg, rt)
+
+    async def amain() -> None:
+        await app.start()
+        try:
+            await app.set_bot_commands([BotCommand(c, d) for c, d in _user_menu()])
+            for oid in rt.cfg.owner_ids:
+                try:
+                    await app.set_bot_commands(
+                        [BotCommand(c, d) for c, d in _owner_menu()],
+                        scope=BotCommandScopeChat(chat_id=oid),
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        task = None
+        if rt.engine.farm is not None:
+            task = asyncio.create_task(H._farm_loop(rt))
+        try:
+            await idle()
+        finally:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await app.stop()
+
+    app.run(amain())
+
+
+# ----------------------------------------------------------------------- entry
+
+
+def build(cfg: Config) -> Runtime:
+    return Runtime(cfg)
+
+
+def run(cfg: Config) -> None:
+    rt = build(cfg)
+    if cfg.use_kurigram():
+        print("Backend: Kurigram (MTProto)")
+        run_kurigram(cfg, rt)
+    else:
+        print("Backend: python-telegram-bot (HTTP Bot API)")
+        run_ptb(cfg, rt)

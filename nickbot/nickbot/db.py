@@ -1,4 +1,4 @@
-"""SQLite 存储：用户、解析记录、封禁、统计。没有 ORM，够用就行。"""
+"""SQLite storage: users, resolutions, bans, stats. No ORM, it does not need one."""
 
 from __future__ import annotations
 

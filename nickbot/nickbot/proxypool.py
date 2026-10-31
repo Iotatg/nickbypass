@@ -59,7 +59,7 @@ class ProxyPool:
         self._dead: Set[str] = set()
         self._lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------ 抓取
+    # ---------------------------------------------------------------- harvesting
 
     async def _fetch(self, client: httpx.AsyncClient) -> List[str]:
         out: List[str] = []
@@ -95,7 +95,7 @@ class ProxyPool:
             self._cands_at = time.time()
             return list(self._cands)
 
-    # ------------------------------------------------------------------ 探测
+    # ------------------------------------------------------------------ probing
 
     async def _probe_site(self, proxy: str, url: str, timeout: float) -> bool:
         try:
@@ -112,12 +112,12 @@ class ProxyPool:
                 body = (r.text or "").lower()
                 if any(m in body for m in WALL_MARKERS):
                     return False
-                # 200/30x 都算过墙（30x 说明站点开始跳转了）
+                # 200 and 30x both count as past the wall (30x means the site started redirecting)
                 return r.status_code < 400 or bool(r.headers.get("location"))
         except Exception:
             return False
 
-    # ------------------------------------------------------------------ 对外
+    # -------------------------------------------------------------------- public
 
     async def find_for(
         self,
@@ -126,7 +126,7 @@ class ProxyPool:
         exclude: Optional[Iterable[str]] = None,
         workers: int = 24,
     ) -> Optional[str]:
-        """返回一个能打开 url 且不是 VPN 墙的代理；找不到返回 None。"""
+        """Return a proxy that opens ``url`` without hitting the VPN wall, else None."""
         host = _host(url)
         skip = set(exclude or ()) | self._dead
 
@@ -180,7 +180,7 @@ class ProxyPool:
         return winner
 
     async def get(self, n: int = 2) -> List[str]:
-        """兼容旧接口：不做站点探测，只给候选。"""
+        """Legacy interface: candidates only, no site probe."""
         return (await self.candidates())[:n]
 
     async def drop(self, proxy: str) -> None:
