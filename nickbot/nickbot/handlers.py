@@ -118,7 +118,11 @@ def owner_only(func):
         u = update.effective_user
         if not u or not rt(context).cfg.is_owner(u.id):
             if update.effective_message:
-                await update.effective_message.reply_text("⛔ Owner-only command.")
+                await update.effective_message.reply_text(
+                    "🔒 That one's for the owner only.\n"
+                    "<i>Send a link instead — I'll take care of it.</i>",
+                    parse_mode=ParseMode.HTML,
+                )
             return
         return await func(update, context)
 
@@ -148,7 +152,8 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     u = update.effective_user
     c = update.effective_chat
     await update.effective_message.reply_text(
-        f"👤 Your ID: <code>{u.id}</code>\n💬 This chat ID: <code>{c.id}</code>",
+        f"👤 You: <code>{u.id}</code>\n💬 This chat: <code>{c.id}</code>\n\n"
+        "<i>Handy if you're setting up the logger chat or adding yourself as owner.</i>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -161,15 +166,21 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     arg = (context.args[0].lower() if context.args else "").strip()
     if arg in ("fast", "http", "快速"):
         r.set_mode(uid, "fast")
-        msg = "Switched to ⚡ <b>Fast mode</b>: HTTP only, no browser. JS-only gates will fail."
+        msg = ("⚡ <b>Fast mode</b>\n"
+               "HTTP only. Quick, but a gate that runs a countdown will beat you.")
     elif arg in ("browser", "slow", "浏览器"):
         r.set_mode(uid, "browser")
-        msg = "Switched to 🌐 <b>Browser mode</b>: slower, but can pass countdowns and popups."
+        msg = ("🌐 <b>Browser mode</b>\n"
+               "A real Chromium opens the page. Slower, but it clicks through "
+               "countdowns and popups that HTTP can't touch.")
     elif arg in ("auto", "自动", ""):
         r.set_mode(uid, "auto")
-        msg = "Switched to <b>Auto</b>: fast when possible, browser only when needed."
+        msg = ("<b>Auto</b> it is.\n"
+               "Fast path first, browser only if the gate actually needs one. "
+               "This is what you want.")
     else:
-        msg = "Usage: <code>/mode auto|fast|browser</code>"
+        msg = ("Usage: <code>/mode auto</code> · <code>/mode fast</code> · "
+               "<code>/mode browser</code>")
     await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
@@ -213,17 +224,19 @@ async def _reply_proxy_check(msg, px: str, saved: bool = False) -> None:
 
     if err:
         text = (
-            "⚠️ <b>Proxy saved but unreachable</b>\n"
-            f"<code>{F.h(px)}</code>\n"
+            "⚠️ <b>Saved, but it doesn't answer</b>\n"
+            f"<code>{F.h(px)}</code>\n\n"
             f"<i>{F.h(err)}</i>\n\n"
-            "Check the host:port / user:pass, or <code>/proxy off</code>."
+            "Check the host, port and password — or clear it with "
+            "<code>/proxy clear</code>."
         )
     else:
+        where = f" · {F.h(country)}" if country else ""
         text = (
-            f"✅ <b>Proxy {'saved' if saved else 'works'}</b>\n"
-            f"<code>{F.h(px)}</code>\n"
-            f"Exit IP <code>{F.h(ip)}</code>{(' · ' + F.h(country)) if country else ''} · {took:.1f}s\n\n"
-            "Retry the link — IP-walled gates should pass now."
+            f"✅ <b>Proxy {'saved' if saved else 'is alive'}</b>\n"
+            f"<code>{F.h(px)}</code>\n\n"
+            f"Exit IP <code>{F.h(ip)}</code>{where} · answered in {took:.1f}s\n\n"
+            "<i>Send the link again — gates that check the IP should let us through now.</i>"
         )
     await msg.reply_text(text, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
 
@@ -240,8 +253,11 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if arg.lower() in ("none", "clear", "reset"):
         r.set_proxy("")
         await msg.reply_text(
-            "🛰 <b>Fixed proxy cleared</b> — back to the server's own IP.",
+            "🛰 <b>Back to the server's own IP</b>\n\n"
+            "<i>No custom exit anymore. If a gate starts refusing us again, "
+            "<code>/proxy on IN</code> is the way back.</i>",
             parse_mode=ParseMode.HTML,
+            link_preview_options=NO_PREVIEW,
         )
         return
 
@@ -251,8 +267,11 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             r.engine.set_farm(False)
             set_env_value("PROXY_FARM", "false")
             await msg.reply_text(
-                "🌾 <b>Proxy farm off</b> — no automatic IP rotation.",
+                "🌾 <b>Pool off</b>\n\n"
+                "<i>No more automatic IP rotation. Links that need a local IP will "
+                "fail honestly instead of retrying.</i>",
                 parse_mode=ParseMode.HTML,
+                link_preview_options=NO_PREVIEW,
             )
             return
         cc = (args[1].upper()[:2] if len(args) > 1 else r.cfg.proxy_country)
@@ -261,10 +280,12 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         set_env_value("PROXY_COUNTRY", cc)
         st = r.engine.farm.stats() if r.engine.farm else {}
         await msg.reply_text(
-            f"🌾 <b>Proxy farm on · {F.h(cc)}</b>\n"
-            f"Pool: {st.get('total', 0)} IPs ({st.get('site_ok', 0)} verified on sites)\n\n"
-            "It only kicks in when a site walls our IP, and it costs nothing when it doesn't.\n"
-            f"Run <code>/proxy scan</code> to fill the pool now.",
+            f"🌾 <b>Pool on · {F.h(cc)}</b>\n\n"
+            f"{st.get('total', 0)} IPs in hand, {st.get('site_ok', 0)} already cleared "
+            "a real gate.\n\n"
+            "<i>It only kicks in when a site walls our IP — normal links don't pay "
+            "for it.</i>\n"
+            "<code>/proxy scan</code> fills the pool right now.",
             parse_mode=ParseMode.HTML,
             link_preview_options=NO_PREVIEW,
         )
@@ -285,50 +306,42 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             set_env_value("PROXY_COUNTRY", cc)
         farm = r.engine.farm
         note = await msg.reply_text(
-            f"🌾 Scanning for <b>{F.h(cc)}</b> proxies…\n"
-            "<i>harvest → exit-IP check → country verify"
-            f"{' → site test' if target else ''}</i>",
+            f"🌾 <b>Looking for {F.h(cc)} proxies…</b>\n"
+            "<i>harvest → ask each one for its exit IP → check the country"
+            f"{' → open the site through it' if target else ''}</i>",
             parse_mode=ParseMode.HTML,
+            link_preview_options=NO_PREVIEW,
         )
         rep = await farm.refresh(target=target or None, limit=250, budget=55)
         st = farm.stats()
-        lines = [
-            f"🌾 <b>{F.h(cc)} proxy farm</b>",
-            f"Candidates {rep.get('candidates', 0)} · reached {rep.get('reached', 0)}"
-            f" · verified {rep.get('verified', 0)}",
-            f"Kept <b>{st['total']}</b> · residential {st.get('residential', 0)}"
-            f" · median {st['median_ms']} ms"
-            + (f" · site-ok {rep.get('site_ok', 0)}" if target else ""),
-            f"⏱ {rep.get('seconds', 0)}s",
-        ]
-        if st["total"] == 0:
-            lines += ["", "<i>Nothing alive right now. Free lists churn fast — scan again in a few minutes.</i>"]
-        elif st.get("residential", 0) == 0:
-            lines += ["", "<i>All survivors are hosting ASNs — gates that check ISP will still 403 them.</i>"]
-        await note.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        await note.edit_text(
+            F.scan_card(cc, rep, st, target),
+            parse_mode=ParseMode.HTML,
+            link_preview_options=NO_PREVIEW,
+        )
         return
 
     # ---------------------------------------------------- 列表
     if sub in ("list", "ls", "show"):
         farm = r.engine.farm
         if not farm:
-            await msg.reply_text("🌾 Farm is off. <code>/proxy on</code> first.",
-                                 parse_mode=ParseMode.HTML)
+            await msg.reply_text(
+                "🌾 <b>Pool is off</b>\n\nTurn it on with <code>/proxy on IN</code> first.",
+                parse_mode=ParseMode.HTML,
+            )
             return
         rows = farm.sample(12)
         if not rows:
-            await msg.reply_text("🌾 Pool is empty. Run <code>/proxy scan</code>.",
-                                 parse_mode=ParseMode.HTML)
+            await msg.reply_text(
+                "🌾 <b>Pool is empty</b>\n\n"
+                "<i>Nothing alive from the last scan. Run <code>/proxy scan</code> — "
+                "free lists churn fast.</i>",
+                parse_mode=ParseMode.HTML,
+                link_preview_options=NO_PREVIEW,
+            )
             return
-        body = "\n".join(
-            f"{i}. <code>{F.h(p.split('://')[-1])}</code> · {farm._db.get(p, {}).get('latency', '?')} ms"
-            f"{' · 🏠' if farm._db.get(p, {}).get('residential') else ''}"
-            f"{' · ✅' if farm._db.get(p, {}).get('site') else ''}"
-            f" · {F.h(str(farm._db.get(p, {}).get('city') or '?'))}"
-            for i, p in enumerate(rows, 1)
-        )
         await msg.reply_text(
-            f"🌾 <b>{farm.country} pool</b> ({farm.stats()['total']} total)\n{body}",
+            F.pool_card(rows, farm._db, farm.country, farm.stats()["total"]),
             parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW,
         )
         return
@@ -340,12 +353,15 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if sub == "add":
             px = farm.add(raw)
             await msg.reply_text(
-                f"✅ Added <code>{F.h(px or raw)}</code>" if px else "❌ Not a valid ip:port",
+                f"✅ Added <code>{F.h(px or raw)}</code> to the pool."
+                if px else
+                "❌ That isn't a valid <code>ip:port</code> — nothing added.",
                 parse_mode=ParseMode.HTML)
         else:
             ok = farm.remove(raw)
-            await msg.reply_text("🗑 Removed." if ok else "❌ Not in pool.",
-                                 parse_mode=ParseMode.HTML)
+            await msg.reply_text(
+                "🗑 Dropped it from the pool." if ok else "❌ That one wasn't in the pool.",
+                parse_mode=ParseMode.HTML)
         return
 
     # ---------------------------------------------------- 状态 / 检测
@@ -354,34 +370,28 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         farm = r.engine.farm
         st = farm.stats() if farm else {}
         if farm:
-            farm_line = f"<b>{F.h(str(st.get('country', '')))}</b> · {st.get('total', 0)} IPs"
+            farm_line = (f"<b>{F.h(str(st.get('country', '')))}</b> · {st.get('total', 0)} IPs"
+                         f" · {st.get('site_ok', 0)} site-tested")
         else:
             farm_line = "off"
-        head = (
-            "🛰 <b>Proxy</b>\n"
-            f"Fixed: <code>{F.h(px.split('@')[-1]) if px else 'none'}</code>\n"
-            f"Farm: {farm_line}"
-        )
+        extra = ""
         if farm and st.get("total"):
-            head += (f"\nFresh {st.get('fresh', 0)} · site-ok {st.get('site_ok', 0)}"
-                     f" · median {st.get('median_ms', 0)} ms")
-        head += (
-            "\n\n<b>Commands</b>\n"
-            "<code>/proxy on [IN]</code> — build/rotate a country pool\n"
-            "<code>/proxy scan [IN] [url]</code> — refill + test\n"
-            "<code>/proxy list</code> · <code>/proxy add ip:port</code>\n"
-            "<code>/proxy http://user:pass@host:port</code> — fixed proxy\n"
-            "<code>/proxy off</code> — disable rotation"
-        )
+            extra = (f"<i>{st.get('fresh', 0)} fresh · median "
+                     f"{st.get('median_ms', 0)} ms</i>")
         if px:
             await _reply_proxy_check(msg, px)
             return
-        await msg.reply_text(head, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
+        await msg.reply_text(
+            F.proxy_card(px, farm_line, extra),
+            parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW,
+        )
         return
 
     if not arg.lower().startswith(("http://", "https://", "socks5://", "socks4://")):
         await msg.reply_text(
-            "Proxy must start with <code>http://</code> or <code>socks5://</code>.",
+            "That doesn't look like a proxy.\n\n"
+            "It has to start with <code>http://</code>, <code>https://</code> or "
+            "<code>socks5://</code>.",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -396,44 +406,38 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     inflight, waiting = r.engine.load()
     st = r.db.stats()
     cached, hits = r.engine.cache_info()
-    text = (
-        "<b>Status</b>\n"
-        f"⏱ Uptime {up // 3600}h {up % 3600 // 60}m\n"
-        f"⚙️ In flight {inflight} · queued {waiting}\n"
-        f"🗄 Cache {cached} entries · {hits} hits\n"
-        f"👥 Users {st['users']} · active 24h {st['active_today']}\n"
-        f"📊 Requests 24h {st['today']} (ok {st['ok_today']})\n"
-        f"🌐 Browser fallback: {'on' if r.cfg.allow_browser else 'off'}\n"
-        f"🛰 Proxy: {(r.cfg.proxy.split('@')[-1] if r.cfg.proxy else 'none')}"
-        f"{' · auto-failover on' if r.cfg.auto_proxy else ''}"
-    )
+    farm = ""
     if r.engine.farm is not None:
         fs = r.engine.farm.stats()
-        text += (f"\n🌾 Farm {fs['country']}: {fs['total']} IPs"
-                 f" · site-ok {fs['site_ok']} · {fs['median_ms']} ms")
-    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+        farm = (f"{fs['country']} pool · {fs['total']} IPs · "
+                f"{fs['site_ok']} site-tested · {fs['median_ms']} ms")
+    await update.effective_message.reply_text(
+        F.status_card(
+            up, inflight, waiting, cached, hits,
+            st["users"], st["active_today"], st["today"], st["ok_today"],
+            r.cfg.allow_browser, r.cfg.proxy, farm,
+        ),
+        parse_mode=ParseMode.HTML,
+        link_preview_options=NO_PREVIEW,
+    )
 
 
 @owner_only
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    r = rt(context)
-    st = r.db.stats()
-    top = "\n".join(f"　{i}. {d} — {n}" for i, (d, n) in enumerate(st["top"], 1)) or "　(none yet)"
-    text = (
-        "<b>Stats</b>\n"
-        f"👥 Users {st['users']} · active 24h {st['active_today']}\n"
-        f"📨 Requests total {st['total']} · 24h {st['today']}\n"
-        f"✅ Success rate 24h {st['success_rate']:.1f}%\n"
-        f"⏱ Avg time 24h {st['avg_elapsed']:.1f}s\n\n"
-        f"<b>Top sites (24h)</b>\n{top}"
+    st = rt(context).db.stats()
+    await update.effective_message.reply_text(
+        F.stats_card(st, st["top"]),
+        parse_mode=ParseMode.HTML,
+        link_preview_options=NO_PREVIEW,
     )
-    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 @owner_only
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     n = rt(context).db.user_count()
-    await update.effective_message.reply_text(f"👥 Total users: <b>{n}</b>", parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text(
+        f"👥 <b>{n}</b> users have talked to the bot so far.", parse_mode=ParseMode.HTML
+    )
 
 
 @owner_only
@@ -446,32 +450,42 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         target = int(context.args[0])
     if not target:
         await update.effective_message.reply_text(
-            "Usage: reply to a message with /ban, or <code>/ban 123456</code>", parse_mode=ParseMode.HTML
+            "Reply to a message with <code>/ban</code>, or give me an ID: "
+            "<code>/ban 123456</code>",
+            parse_mode=ParseMode.HTML,
         )
         return
     r.db.ban(target, " ".join(context.args[1:]) if len(context.args) > 1 else "")
-    await update.effective_message.reply_text(f"🚫 Banned <code>{target}</code>", parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text(
+        f"🚫 <code>{target}</code> can't use the bot anymore.", parse_mode=ParseMode.HTML
+    )
 
 
 @owner_only
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not (context.args and context.args[0].lstrip("-").isdigit()):
-        await update.effective_message.reply_text("Usage: <code>/unban 123456</code>", parse_mode=ParseMode.HTML)
+        await update.effective_message.reply_text(
+            "Usage: <code>/unban 123456</code>", parse_mode=ParseMode.HTML
+        )
         return
     target = int(context.args[0])
     rt(context).db.unban(target)
-    await update.effective_message.reply_text(f"✅ Unbanned <code>{target}</code>", parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text(
+        f"✅ <code>{target}</code> is welcome again.", parse_mode=ParseMode.HTML
+    )
 
 
 @owner_only
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.effective_message.text.partition(" ")[2].strip()
     if not text:
-        await update.effective_message.reply_text("Usage: <code>/broadcast text</code>", parse_mode=ParseMode.HTML)
+        await update.effective_message.reply_text(
+            "Usage: <code>/broadcast your message</code>", parse_mode=ParseMode.HTML
+        )
         return
     r = rt(context)
     ids = r.db.all_user_ids()
-    await update.effective_message.reply_text(f"📤 Broadcasting to {len(ids)} users…")
+    await update.effective_message.reply_text(f"📤 Sending to {len(ids)} users…")
     ok = fail = 0
     for uid in ids:
         try:
@@ -480,7 +494,9 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception:
             fail += 1
         await asyncio.sleep(0.05)
-    await update.effective_message.reply_text(f"✅ Done: {ok} sent · {fail} failed")
+    await update.effective_message.reply_text(
+        f"✅ Delivered to {ok} · {fail} blocked or gone."
+    )
 
 
 # ------------------------------------------------------------------ resolve
@@ -504,6 +520,16 @@ async def _one(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> 
     return data
 
 
+def _buttons(data: Dict, key: str) -> InlineKeyboardMarkup:
+    """Every result gets a way forward: the path, the link, or a second attempt."""
+    row = [InlineKeyboardButton("🧭 Path", callback_data=key)]
+    if data.get("ok") and data.get("final"):
+        row.append(InlineKeyboardButton("🔗 Open", url=data["final"]))
+    elif data.get("method") != "browser" and (data.get("blocked") or "") != "vpn":
+        row.append(InlineKeyboardButton("🌐 Try browser", callback_data="rb:" + key))
+    return InlineKeyboardMarkup([row])
+
+
 async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: List[str]) -> None:
     r = rt(context)
     uid = update.effective_user.id
@@ -512,7 +538,7 @@ async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: Li
     allowed, retry = r.allow(uid)
     if not allowed:
         await update.effective_message.reply_text(
-            f"🐢 Slow down — try again in {retry}s.", parse_mode=ParseMode.HTML
+            F.rate_limited(retry), parse_mode=ParseMode.HTML
         )
         return
 
@@ -522,9 +548,11 @@ async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: Li
         scraper = sites.is_scraper_only(url)
         if scraper:
             await update.effective_message.reply_text(
-                f"🚫 <code>{F.h(F.short(url, 60))}</code>\n"
-                f"File host ({F.h(scraper)}) — extracting direct links means scraping pirated "
-                f"content, which this bot does not do.",
+                f"🚫 <b>Not this one</b>\n"
+                f"<code>{F.h(F.short(url, 60))}</code>\n\n"
+                f"<i>{F.h(scraper)} is a file host. Pulling direct download links out "
+                f"of it means scraping pirated content, and that's not something "
+                f"this bot does.</i>",
                 parse_mode=ParseMode.HTML,
                 link_preview_options=NO_PREVIEW,
             )
@@ -535,7 +563,7 @@ async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: Li
 
     total = len(todo)
     status = await update.effective_message.reply_text(
-        f"⏳ <b>Resolving {total} link{'s' if total > 1 else ''}…</b>",
+        F.resolving(total),
         parse_mode=ParseMode.HTML,
         link_preview_options=NO_PREVIEW,
     )
@@ -550,10 +578,7 @@ async def do_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE, urls: Li
     for i, data in enumerate(results, 1):
         text = F.result_card(data, i, total)
         key = r.put_trace(data)
-        row = [InlineKeyboardButton("🧭 Trace", callback_data=key)]
-        if data.get("ok") and data.get("final"):
-            row.append(InlineKeyboardButton("🔗 Open", url=data["final"]))
-        kb = InlineKeyboardMarkup([row])
+        kb = _buttons(data, key)
 
         if i == 1:
             try:
@@ -575,7 +600,9 @@ async def cmd_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     urls = extract_urls(text.partition(" ")[2] if " " in text else "", rt(context).cfg.max_urls)
     if not urls:
         await update.effective_message.reply_text(
-            "Usage: <code>/bypass https://example.com/xxxx</code>", parse_mode=ParseMode.HTML
+            "Give me something to work with:\n\n"
+            "<code>/bypass https://gplinks.co/abc123</code>",
+            parse_mode=ParseMode.HTML,
         )
         return
     await do_bypass(update, context, urls)
@@ -595,7 +622,45 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     q = update.callback_query
     if not q:
         return
-    data = rt(context).get_trace(q.data or "")
+    r = rt(context)
+    payload = q.data or ""
+
+    # ---------------------------------------------------------- browser retry
+    if payload.startswith("rb:"):
+        data = r.get_trace(payload[3:])
+        if not data:
+            await q.answer("That card expired — send the link again.", show_alert=True)
+            return
+        url = data.get("input") or ""
+        await q.answer("Opening a browser — give it a few seconds…")
+        try:
+            await q.message.edit_reply_markup(reply_markup=None)
+            await context.bot.send_chat_action(q.message.chat_id, ChatAction.TYPING)
+        except Exception:
+            pass
+        try:
+            new = await r.engine.resolve(url, allow_browser=True, fresh=True)
+        except Exception as exc:
+            await q.message.reply_text(
+                f"⚠️ <b>The browser run fell over</b>\n\n<i>{F.h(str(exc)[:180])}</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        key = r.put_trace(new)
+        try:
+            await q.message.edit_text(
+                F.result_card(new), parse_mode=ParseMode.HTML,
+                reply_markup=_buttons(new, key), link_preview_options=NO_PREVIEW,
+            )
+        except Exception:
+            await q.message.reply_text(
+                F.result_card(new), parse_mode=ParseMode.HTML,
+                reply_markup=_buttons(new, key), link_preview_options=NO_PREVIEW,
+            )
+        return
+
+    # ---------------------------------------------------------- trace
+    data = r.get_trace(payload)
     if not data:
         await q.answer("This trace expired — resolve the link again.", show_alert=True)
         return

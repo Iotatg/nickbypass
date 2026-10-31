@@ -150,16 +150,18 @@ def display_name(url: str) -> str:
 
 
 def supported_text(limit: int = 60) -> str:
-    gates = [s.name for s in SITES if s.needs_browser]
-    plain = [s.name for s in SITES if not s.needs_browser]
+    gates = sorted(set(s.name for s in SITES if s.needs_browser))
+    plain = sorted(set(s.name for s in SITES if not s.needs_browser))
     lines = [
-        f"<b>Ad gates</b> — {len(gates)} sites",
-        ", ".join(sorted(set(gates))[:limit]),
+        "<b>Sites I already know</b>",
         "",
-        f"<b>Plain shorteners</b> — {len(plain)} sites",
-        ", ".join(sorted(set(plain))[:limit]),
+        f"<b>Ad gates</b> · {len(gates)} of them, with a countdown or a button in the way",
+        ", ".join(gates[:limit]),
         "",
-        "<i>Unknown domains still go through the generic engine — "
-        "not being listed does not mean unsupported.</i>",
+        f"<b>Plain shorteners</b> · {len(plain)}, one redirect and done",
+        ", ".join(plain[:limit]),
+        "",
+        "<i>Not on the list? Send it anyway. Unknown domains still go through the "
+        "generic engine — missing here doesn't mean unsupported.</i>",
     ]
     return "\n".join(lines)

@@ -2,17 +2,45 @@
 
 Telegram bot that resolves shortlinks and ad-gate links to their real destination.
 
-**v2 — fast path first, browser only when it is actually needed.**
+**v3 — same engine, a lot less robot in the replies.**
 
 ```
-✅ 1/1 · VPLink
+✅ Link bypassed · GPLinks
 
-Original Link : https://vplink.in/nAKfh
-Bypassed Link : https://auth.pwasmultiverse.workers.dev/generate?code=...
+You sent
+https://gplinks.co/aBc12X
 
-Time Taken : 0.42 seconds
-Method : ⚡ Site API · 2 hops
+Real destination
+https://drive.google.com/file/d/1Kx9mQ/view
+
+Straight through the gate — that's the real destination.
+
+0.84s · direct HTTP · 3 hops
+─────────────────
+⚡ @nova93ec2c4_bot
 ```
+
+When it can't get through, it explains the wall in plain words and offers the fix
+instead of dumping a status code:
+
+```
+⚠️ Couldn't get through · VPLink
+
+You sent
+https://vplink.in/nAKfh
+
+What happened
+This site checks the IP the request comes from and turns down datacenter
+and VPN addresses. Nothing on our side can disguise that.
+
+What to try
+/proxy on IN builds a pool of local IPs. A residential proxy in PROXY works
+too, if you have one.
+
+0.67s · direct HTTP · 1 hop
+```
+
+`docs/ui-preview.png` is a full render of every card the bot can send.
 
 ---
 
@@ -44,7 +72,17 @@ Method : ⚡ Site API · 2 hops
 | `/stats` `/users` `/ban` `/unban` `/broadcast` | owner only |
 | `/id` | your ID + chat ID |
 
-Every result has a **🧭 Trace** button (full hop-by-hop trace) and **🔗 Open**.
+Every result carries buttons that depend on what happened:
+
+| Button | When | What it does |
+|---|---|---|
+| **🧭 Path** | always | hop-by-hop trace — every request, redirect, extract and click |
+| **🔗 Open** | on success | jumps straight to the destination |
+| **🌐 Try browser** | only on failure | re-runs the *same* link with Chromium, bypassing the cache — no need to retype `/mode browser` |
+
+The command menu is set from code (`/start` shows the user set, owners get the admin
+set automatically), so a fresh deploy looks right without manual BotFather work.
+
 
 ## Run
 
@@ -136,8 +174,8 @@ nickbot/
   proxypool.py   legacy free-proxy rotation (unverified)
   proxyfarm.py   country IP pool: harvest → exit-IP → country/ISP → site probe → persist
   resolver.py    orchestration: fast → gate → browser → proxy retry, cache, dedupe
-  handlers.py    commands, parallel processing, buttons
-  format.py      message cards (HTML-escaped)
+  handlers.py    commands, parallel processing, retry/browser buttons
+  format.py      every word the bot says — cards, help, trace, pool/status views
   sites.py       domain registry (60+ gates, 10 shorteners)
   db.py          sqlite: users, requests, bans
 tests/
@@ -150,7 +188,7 @@ tests/
 
 ```bash
 python3 tests/test_fast.py       # 16 checks — fast path, site API, VPN wall, dead destination
-python3 tests/test_offline.py    # 36 checks — extraction, routing, rate limit, DB, escaping
+python3 tests/test_offline.py    # 44 checks — extraction, routing, rate limit, DB, copy, escaping
 python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer bounce
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 ```

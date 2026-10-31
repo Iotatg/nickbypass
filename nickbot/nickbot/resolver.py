@@ -118,11 +118,14 @@ class Engine:
 
     # ------------------------------------------------------------------ 对外
 
-    async def resolve(self, url: str, allow_browser: Optional[bool] = None) -> Dict[str, Any]:
+    async def resolve(self, url: str, allow_browser: Optional[bool] = None,
+                      fresh: bool = False) -> Dict[str, Any]:
+        """``fresh=True`` skips the cache — used by the Retry button, which would
+        otherwise replay the exact failure the user just saw."""
         allow = self.cfg.allow_browser if allow_browser is None else allow_browser
         key = (url, allow)
 
-        cached = self._cache_get(key)
+        cached = None if fresh else self._cache_get(key)
         if cached is not None:
             out = dict(cached)
             out["cached"] = True

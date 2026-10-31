@@ -91,7 +91,11 @@ data_ok = {
 card = F.result_card(data_ok, 1, 2)
 check("成功卡片含终点", "dst.example/a?b=1&amp;c=2" in card, True)
 check("& 已转义", "&amp;" in card, True)
-check("编号", card.startswith("✅ <b>1/2</b>"), True)
+check("编号与标题", card.startswith("✅ <b>Link bypassed</b> · 1/2"), True)
+check("成功卡片有原文链接", "You sent" in card and "gplinks.co/x" in card, True)
+check("成功卡片有一句人话结尾", card.count("<i>") >= 2, True)
+check("成功卡片带页脚", card.rstrip().endswith("@nova93ec2c4_bot"), True)
+check("缓存结果标注", "from cache" in F.result_card(dict(data_ok, cached=True)), True)
 
 data_bad = {
     "input": "https://ouo.io/x", "final": "https://ouo.io/x", "ok": False,
@@ -99,7 +103,14 @@ data_bad = {
 }
 card = F.result_card(data_bad)
 check("失败卡片带原因", "Cloudflare" in card, True)
-check("失败不显示终点", "✅" in card, False)
+check("失败不显示成功标记", "✅" in card, False)
+check("失败卡片解释发生了什么", "What happened" in card and "What to try" in card, True)
+check("失败卡片不再重复原始 note", "被 Cloudflare 拦" in card, False)
+
+vpn = dict(data_bad, blocked="vpn", note="Site blocks datacenter / VPN IPs", method="http")
+card = F.result_card(vpn)
+check("IP 墙给出可执行建议", "/proxy on IN" in card, True)
+check("IP 墙不推浏览器（同 IP 无用）", "browser" in card.lower(), False)
 
 evil = dict(data_ok, final="https://x.example/<script>alert(1)</script>")
 check("HTML 注入被转义", "<script>" in F.result_card(evil), False)

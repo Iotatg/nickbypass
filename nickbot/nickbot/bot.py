@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from telegram import Update
+from telegram import BotCommand, BotCommandScopeChat, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -17,10 +17,41 @@ from . import handlers as H
 from .config import Config
 from .handlers import Runtime
 
+USER_COMMANDS = [
+    BotCommand("start", "how this works"),
+    BotCommand("bypass", "resolve a link — or just paste it"),
+    BotCommand("mode", "fast · auto · browser"),
+    BotCommand("supported", "sites I already know"),
+    BotCommand("status", "engine health and cache"),
+    BotCommand("id", "your Telegram ID"),
+]
+
+OWNER_COMMANDS = USER_COMMANDS + [
+    BotCommand("stats", "traffic and success rate"),
+    BotCommand("users", "how many people use it"),
+    BotCommand("broadcast", "message every user"),
+    BotCommand("ban", "block a user"),
+    BotCommand("unban", "let a user back in"),
+    BotCommand("proxy", "exit IP and local pool"),
+]
+
 
 async def _post_init(app: Application) -> None:
-    """启动后台任务：代理农场保温。"""
+    """启动后台任务：代理农场保温；顺便把命令菜单写好。"""
     r = app.bot_data["rt"]
+
+    try:
+        await app.bot.set_my_commands(USER_COMMANDS)
+        for oid in r.cfg.owner_ids:
+            try:
+                await app.bot.set_my_commands(
+                    OWNER_COMMANDS, scope=BotCommandScopeChat(chat_id=oid)
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     if r.engine.farm is not None:
         app.bot_data["farm_task"] = asyncio.create_task(H._farm_loop(r))
 
