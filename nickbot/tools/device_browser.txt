@@ -1,0 +1,457 @@
+"""
+Browser-based resolver using Selenium + Chromium.
+
+Opens the page in Chromium, waits for normal countdowns,
+and clicks supported continuation buttons.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+from typing import List, Tuple
+
+from .models import Step
+from .rules import host_of
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+CHROMIUM_PATH = os.environ.get(
+    "CHROME_PATH",
+    "/data/data/com.termux/files/usr/bin/chromium-browser",
+)
+
+CHROMEDRIVER_PATH = os.environ.get(
+    "CHROMEDRIVER_PATH",
+    "/data/data/com.termux/files/usr/bin/chromedriver",
+)
+
+BLOCK_HOSTS = (
+    "doubleclick.net", "googlesyndication.com", "google-analytics.com",
+    "googletagmanager.com", "adservice.google.com", "popads.net",
+    "popcash.net", "propellerads.com", "onclickads.net", "adsterra.com",
+    "exoclick.com", "juicyads.com", "trafficjunky.net", "hilltopads.net",
+    "mgid.com", "taboola.com", "outbrain.com", "zedo.com", "adcash.com",
+    "clickadu.com", "facebook.net", "hotjar.com", "yandex.ru/metrika",
+    "mc.yandex.ru", "cloudflareinsights.com",
+)
+
+CLICK_RX = re.compile(
+    r"(continue|get\s*link|getlink|proceed|skip\s*ad|skip|click\s*here|"
+    r"download|verify|unlock|go\s*to\s*link|open\s*link|free\s*access|get\s*it)",
+    re.I,
+)
+
+
+def _gate_hosts(start_host: str) -> Tuple[str, ...]:
+    return (
+        start_host,
+        "linkvertise.com",
+        "link-to.net",
+        "ouo.io",
+        "ouo.press",
+        "gplinks.co",
+        "gplinks.in",
+        "shrinkme.io",
+        "shrinke.me",
+        "adfoc.us",
+        "boost.ink",
+        "exe.io",
+        "aylink.co",
+        "tnlink.in",
+        "mdisk.pro",
+        "cuty.io",
+        "tii.ai",
+        "clk.sh",
+        "za.gl",
+    )
+
+
+class BrowserResolver:
+    def __init__(
+        self,
+        headless: bool = True,
+        timeout: float = 30.0,
+        proxy: str = "",
+    ) -> None:
+        self.headless = headless
+        self.timeout = timeout
+        self.proxy = (proxy or "").strip()
+
+    def _launch(self):
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+
+        options = Options()
+        options.binary_location = CHROMIUM_PATH
+
+        if self.headless:
+            options.add_argument("--headless")
+
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--ignore-certificate-errors")
+        options.add_argument("--window-size=1366,800")
+        options.add_argument(f"--user-agent={UA}")
+
+        if self.proxy:
+            options.add_argument(f"--proxy-server={self.proxy}")
+
+        service = Service(executable_path=CHROMEDRIVER_PATH)
+
+        driver = webdriver.Chrome(
+            service=service,
+            options=options,
+        )
+
+        driver.set_page_load_timeout(
+            max(10, int(self.timeout * 0.6))
+        )
+
+        return driver
+
+    @staticmethod
+    def _is_blocked_host(host: str) -> bool:
+        host = (host or "").lower()
+
+        return any(
+            host == blocked
+            or host.endswith("." + blocked)
+            or blocked in host
+            for blocked in BLOCK_HOSTS
+        )
+
+    @staticmethod
+    def _find_buttons(driver) -> List[str]:
+        script = r"""
+        const rx = arguments[0];
+        const r = new RegExp(rx, 'i');
+
+        const sel =
+          'a,button,[role=button],input[type=submit],' +
+          'div[onclick],span[onclick],div.btn,span.btn';
+
+        const out = [];
+
+        for (const e of document.querySelectorAll(sel)) {
+          try {
+            const b = e.getBoundingClientRect();
+            const s = getComputedStyle(e);
+
+            if (b.width < 8 || b.height < 8) continue;
+            if (s.visibility === 'hidden' || s.display === 'none') continue;
+            if (parseFloat(s.opacity || '1') < 0.3) continue;
+            if (b.top > window.innerHeight * 3) continue;
+
+            let t = (
+              e.innerText ||
+              e.value ||
+              ''
+            ).trim().replace(/\s+/g, ' ');
+
+            if (!t) continue;
+
+            let score = 0;
+
+            if (r.test(t)) score += 10;
+            if (e.tagName === 'BUTTON' || e.tagName === 'A') score += 2;
+
+            if (
+              e.id &&
+              /(btn|continue|get|link|go|submit)/i.test(e.id)
+            ) {
+              score += 3;
+            }
+
+            if (
+              e.className &&
+              /(btn|button|continue|getlink|submit)/i.test(
+                String(e.className)
+              )
+            ) {
+              score += 2;
+            }
+
+            if (/(ad|banner|popup|promo|sponsor)/i.test(t)) {
+              score -= 9;
+            }
+
+            if (/^(×|x|✕|close|dismiss)$/i.test(t)) {
+              score -= 12;
+            }
+
+            if (score >= 10) {
+              out.push({
+                t: t.slice(0, 60),
+                score: score
+              });
+            }
+          } catch (_) {}
+        }
+
+        out.sort((a, b) => b.score - a.score);
+
+        return out.slice(0, 5).map(x => x.t);
+        """
+
+        try:
+            return driver.execute_script(
+                script,
+                CLICK_RX.pattern,
+            ) or []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _click_button(driver, label: str) -> bool:
+        script = r"""
+        const label = arguments[0];
+
+        const sel =
+          'a,button,[role=button],input[type=submit],' +
+          'div[onclick],span[onclick],div.btn,span.btn';
+
+        for (const e of document.querySelectorAll(sel)) {
+          try {
+            const t = (
+              e.innerText ||
+              e.value ||
+              ''
+            ).trim().replace(/\s+/g, ' ');
+
+            if (t !== label) continue;
+
+            const b = e.getBoundingClientRect();
+
+            if (b.width < 8 || b.height < 8) continue;
+
+            e.scrollIntoView({
+              block: 'center'
+            });
+
+            e.click();
+
+            return true;
+          } catch (_) {}
+        }
+
+        return false;
+        """
+
+        try:
+            return bool(driver.execute_script(script, label))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _body_text(driver) -> str:
+        try:
+            return driver.find_element("tag name", "body").text[:4000]
+        except Exception:
+            return ""
+
+    def resolve(self, url: str) -> Tuple[str, List[Step], str]:
+        steps: List[Step] = []
+
+        start_host = host_of(url)
+        gates = _gate_hosts(start_host)
+
+        final = ""
+        note = ""
+
+        try:
+            driver = self._launch()
+        except Exception as exc:
+            return (
+                "",
+                [
+                    Step(
+                        "error",
+                        url,
+                        detail=f"Chromium failed to start: {exc}",
+                    )
+                ],
+                "Browser failed to start",
+            )
+
+        try:
+            # Ask Chromium to block common ad/analytics hosts.
+            try:
+                driver.execute_cdp_cmd(
+                    "Network.enable",
+                    {},
+                )
+
+                blocked_urls = [
+                    f"*://*.{host}/*"
+                    for host in BLOCK_HOSTS
+                ]
+
+                driver.execute_cdp_cmd(
+                    "Network.setBlockedURLs",
+                    {"urls": blocked_urls},
+                )
+            except Exception:
+                pass
+
+            t0 = time.time()
+            last_url = ""
+            clicked: set[str] = set()
+            waited_countdown = False
+            idle = 0
+
+            try:
+                driver.get(url)
+            except Exception as exc:
+                steps.append(
+                    Step(
+                        "note",
+                        url,
+                        detail=(
+                            "Page load timed out / failed, "
+                            f"still watching: {type(exc).__name__}"
+                        ),
+                    )
+                )
+
+            deadline = time.time() + self.timeout
+
+            while time.time() < deadline:
+                try:
+                    cur = driver.current_url
+                except Exception:
+                    cur = url
+
+                if cur and cur != last_url:
+                    steps.append(
+                        Step(
+                            "redirect",
+                            cur,
+                            detail="In-browser navigation",
+                        )
+                    )
+                    last_url = cur
+
+                cur_host = host_of(cur)
+
+                # Destination detected after leaving known gate hosts.
+                if (
+                    cur
+                    and cur != url
+                    and cur_host
+                    and not any(
+                        cur_host == g
+                        or cur_host.endswith("." + g)
+                        for g in gates
+                    )
+                ):
+                    final = cur
+                    break
+
+                body = self._body_text(driver)
+
+                # Countdown detected.
+                m = re.search(
+                    r"(\d{1,2})\s*"
+                    r"(?:s|sec|secs|second|seconds)\b",
+                    body,
+                    re.I,
+                )
+
+                if m and not waited_countdown:
+                    waited_countdown = True
+
+                    steps.append(
+                        Step(
+                            "note",
+                            cur,
+                            detail=(
+                                f"Page has a {m.group(1)}s "
+                                "countdown, waiting"
+                            ),
+                        )
+                    )
+
+                labels = self._find_buttons(driver)
+
+                acted = False
+
+                for label in labels:
+                    if label in clicked:
+                        continue
+
+                    clicked.add(label)
+
+                    if self._click_button(driver, label):
+                        steps.append(
+                            Step(
+                                "click",
+                                cur,
+                                detail=f'Clicked "{label}"',
+                            )
+                        )
+
+                        acted = True
+                        time.sleep(1.2)
+                        break
+
+                if not acted:
+                    idle += 1
+
+                    if (
+                        cur != url
+                        and idle >= 2
+                        and not labels
+                        and not m
+                    ):
+                        steps.append(
+                            Step(
+                                "note",
+                                cur,
+                                detail=(
+                                    "No countdown or supported button "
+                                    "left; still on the gate"
+                                ),
+                            )
+                        )
+                        break
+
+                    time.sleep(0.9)
+
+                else:
+                    idle = 0
+
+            if final:
+                note = "Reached the destination in browser mode"
+            else:
+                note = (
+                    "Browser finished but never left the gate "
+                    "(captcha / login / region block, or dead link)"
+                )
+
+            try:
+                current = driver.current_url
+            except Exception:
+                current = url
+
+            steps.append(
+                Step(
+                    "note",
+                    final or current,
+                    detail=f"Browser took {time.time() - t0:.1f}s",
+                )
+            )
+
+        finally:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+        return final, steps, note
