@@ -1,0 +1,58 @@
+# Nick Bypass Bot
+
+Telegram bot that resolves ad-gate / link-shortener chains (gplinks, vplink,
+arolinks, liteshort, earn4link, …) down to the real destination, and says so
+honestly when a site refuses the server's IP.
+
+```
+nickbypass/
+├── nickbot/          Telegram bot (python-telegram-bot v21, sqlite, httpx)
+│   ├── nickbot/      config, resolver, gates, proxy farm, handlers
+│   ├── tests/        87 offline checks (no network needed)
+│   └── README.md     commands, config, deploy
+└── linkresolver/     standalone resolution engine (HTTP + Playwright)
+```
+
+## Quick start
+
+```bash
+cd nickbot
+pip install -r requirements.txt
+playwright install chromium
+cp .env.example .env          # BOT_TOKEN + OWNER_ID
+python3 -m nickbot --check
+python3 -m nickbot
+```
+
+`linkresolver` is picked up from `../linkresolver` by default
+(`LINKRESOLVER_HOME` overrides it).
+
+## What it does
+
+- Fast path: async HTTP/2 with cookie jar, 30x, `meta refresh`, JS `location`,
+  base64 params, inline JSON, `/links/go` site API.
+- Browser fallback only when a page genuinely needs JS/timers (Playwright).
+- Detects and reports real walls: Cloudflare challenge, "VPN detected",
+  `403` on datacenter ASNs — instead of inventing a result.
+- Country proxy farm (`/proxy on IN`): harvest → exit-IP → country/ISP check →
+  site probe → ranked pool, auto-refreshed in the background.
+
+## Tests
+
+```bash
+cd nickbot
+python3 tests/test_offline.py   # 36
+python3 tests/test_fast.py      # 16
+python3 tests/test_chain.py     # 10
+python3 tests/test_farm.py      # 25
+```
+
+## Scope
+
+No captcha solving, no login/paywall bypass, no file-host direct links. It
+resolves public ad-gate chains and reports failures with a reason.
+
+## Note
+
+`.env` is git-ignored on purpose. Never commit a bot token — revoke it with
+@BotFather if it ever leaks.

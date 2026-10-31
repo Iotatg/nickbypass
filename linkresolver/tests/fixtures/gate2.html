@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Verifying…</title></head>
+<body style="font-family:sans-serif;text-align:center;padding-top:80px">
+<h2>Verifying your browser</h2>
+<p id="cd">Please wait <b>3</b> seconds</p>
+<button id="btn" style="display:none;padding:14px 30px;font-size:16px">Continue</button>
+<script>
+// 终点由 JS 运行时拼出来，静态 HTML 里没有任何完整 URL —— 纯 HTTP 抓不到
+const p1 = "http://local", p2 = "host:8765/tar", p3 = "get.html";
+let n = 3;
+const t = setInterval(() => {
+  n--;
+  document.getElementById('cd').innerHTML = n > 0 ? ('Please wait <b>' + n + '</b> seconds') : 'Ready!';
+  if (n <= 0) { clearInterval(t); document.getElementById('btn').style.display = 'inline-block'; }
+}, 1000);
+document.getElementById('btn').addEventListener('click', () => {
+  location.assign(p1 + p2 + p3);
+});
+</script>
+</body></html>

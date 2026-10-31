@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Please wait</title></head>
+<body style="font-family:sans-serif;text-align:center;padding-top:80px">
+<h2>Generating your link…</h2>
+<p id="cd">Please wait <b>4</b> seconds</p>
+<button id="btn" style="display:none;padding:14px 28px;font-size:16px"
+        onclick="location.href='http://localhost:8765/target.html'">Get Link</button>
+<script>
+let n = 4;
+const t = setInterval(() => {
+  n--;
+  document.getElementById('cd').innerHTML = n > 0 ? ('Please wait <b>' + n + '</b> seconds') : 'Ready!';
+  if (n <= 0) { clearInterval(t); document.getElementById('btn').style.display = 'inline-block'; }
+}, 1000);
+</script>
+</body></html>
