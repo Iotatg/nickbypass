@@ -4,7 +4,8 @@
 <p id="cd">Please wait <b>3</b> seconds</p>
 <button id="btn" style="display:none;padding:14px 30px;font-size:16px">Continue</button>
 <script>
-// 终点由 JS 运行时拼出来，静态 HTML 里没有任何完整 URL —— 纯 HTTP 抓不到
+// The destination is assembled at runtime; no complete URL exists in the
+// static HTML, so plain HTTP cannot see it
 const p1 = "http://local", p2 = "host:8765/tar", p3 = "get.html";
 let n = 3;
 const t = setInterval(() => {

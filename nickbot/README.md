@@ -55,6 +55,36 @@ too, if you have one.
 
 **Nothing is invented.** If it can't get through, it says exactly where it stopped and why.
 
+### Is that URL the destination, or just another hop?
+
+A 200 response, or a URL that merely differs from the one you pasted, is not a
+destination. `auth.something.workers.dev/generate?code=…` is a generated auth
+page, and calling it a "Bypassed Link" is the bug this handles.
+
+Every hop's answer is scored on independent signals — known gate host,
+`auth`/`go` subdomain, serverless hosting, gate-shaped path, a `code=`/`token=`
+credential, an embedded target URL, page copy like "redirecting", and whether it
+stays on the same host as the hop that produced it. Content pages (two or more
+slug segments, no gate words, no credential) pull the score back down, so
+`/blog/how-to-generate-links` is never mistaken for a gate.
+
+If the score says "waypoint", the URL becomes the input of the next hop — up to
+`MAX_HOPS` (default 12), with a visited set so a ping-pong chain can't spin. If
+the HTTP path lands on a waypoint, the browser gets one shot at the same page
+first, because gates often hand a decoy link to an HTTP client and the real exit
+to a browser. A chain that ends on a page which only exists to send you on is
+reported as unresolved, never as success.
+
+The log shows the whole walk:
+
+```
+[resolver] hop=1 url=https://vplink.in/nAKfh
+[resolver] method=browser ok=True next=https://auth....workers.dev/generate?code=...
+[resolver] intermediate=true score=5 why=subdomain 'auth', generated hosting (workers.dev), ...
+[resolver] hop=2 url=https://auth....workers.dev/generate?code=...
+[resolver] FINAL=https://targetssc.com/studyinsurances/...
+```
+
 ## Commands
 
 | Command | Description |
@@ -288,6 +318,7 @@ tests/
   test_offline.py  formatting, URL parsing, rate limit, DB, handler wiring
   test_registry.py 2,400+ domains: no dupes, lookup rules, terminal logic, speed
   test_remote.py   log tail/rotate, diagnostics, execv restart, owner gate
+  test_hops.py     final-destination scoring + the multi-hop loop
 ```
 
 ## Tests
@@ -300,9 +331,12 @@ python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer boun
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 python3 tests/test_registry.py   # 52 checks — 2,400+ domains, lookup, terminal logic, speed
 python3 tests/test_remote.py     # 31 checks — /diag /restart /update /logs plumbing
+python3 tests/test_hops.py       # 53 checks — waypoint scoring, multi-hop, loop/hop budget
 ```
 
-217 checks, no network needed.
+270 checks, no network needed. The resolver engine has its own suite:
+`python3 ../linkresolver/tests/test_multihop.py` (16 checks, includes a parity
+test so the bot's classifier and the CLI's copy cannot drift).
 
 `test_gate.py` is the one that matters for the bug people hit: a local server
 imitates a GT gate that refuses `/links/go` without the CSRF pair, answers `#`

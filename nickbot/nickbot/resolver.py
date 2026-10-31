@@ -5,18 +5,21 @@ only as the last resort.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from . import sites
+from . import hops, sites
 from .config import Config
 from .gates import FastResolver
 from .proxyfarm import Farm
 from .proxypool import ProxyPool
 
-BROWSER_HELP = ("Playwright isn't installed here, so the browser path is closed. "
-                "Install it with: pip install playwright && playwright install chromium")
+BROWSER_HELP = ("Selenium/Chromium browser engine is unavailable here. "
+                "Check that Chromium and ChromeDriver are installed.")
+
+log = logging.getLogger("nickbot.resolver")
 
 
 class Engine:
@@ -167,12 +170,107 @@ class Engine:
         return dict(data)
 
     async def _resolve_inner(self, url: str, allow: bool) -> Dict[str, Any]:
+        """Walk the chain until the destination is genuinely final.
+
+        Each hop is resolved the normal way (HTTP fast path, browser only when
+        the page needs it); the answer is then classified. An intermediate
+        answer - a generated auth endpoint, another shortener, a /go/ page -
+        becomes the input of the next hop instead of being reported as success.
+
+        When the HTTP path lands on a waypoint, the browser gets one shot at the
+        *same* page first: gates routinely offer a decoy link to an HTTP client
+        and the real exit to a real browser.
+        """
+        t0 = time.perf_counter()
+        budget = max(1, int(self.cfg.max_hops))
+        cur = url
+        seen = {hops.normalize(url)}
+        browser_tried: set[str] = set()
+        trail: List[Dict[str, Any]] = []
+        data: Dict[str, Any] = {}
+
+        for n in range(1, budget + 1):
+            log.info("[resolver] hop=%d url=%s", n, cur)
+            data = await self._one_hop(cur, allow)
+            data["input"] = url
+            final = (data.get("final") or "").strip()
+            ok = bool(data.get("ok") and final)
+            method = data.get("method") or "http"
+            log.info("[resolver] method=%s ok=%s next=%s", method, ok, final or "-")
+
+            verdict = (
+                hops.is_intermediate(final, prev_url=cur)
+                if final else hops.Verdict(False, 0, ["no destination"])
+            )
+
+            # HTTP said "done" but the URL is a waypoint: the gate may be
+            # serving the real exit only to a browser. Ask it before moving on.
+            if ok and verdict.intermediate and allow and method != "browser":
+                key0 = hops.normalize(cur)
+                if key0 not in browser_tried:
+                    browser_tried.add(key0)
+                    log.info("[resolver] %s looks intermediate (%s) - browser retry on the same page",
+                             final, verdict.why)
+                    b = await self._one_hop(cur, allow, force_browser=True)
+                    bfinal = (b.get("final") or "").strip()
+                    if b.get("ok") and bfinal and not hops.same_target(bfinal, final):
+                        b["input"] = url
+                        data = b
+                        final, method = bfinal, b.get("method") or "browser"
+                        verdict = hops.is_intermediate(final, prev_url=cur)
+                        log.info("[resolver] browser found %s (intermediate=%s)",
+                                 final, verdict.intermediate)
+
+            trail.append({
+                "hop": n, "url": cur, "next": final, "ok": ok, "method": method,
+                "intermediate": verdict.intermediate, "score": verdict.score,
+                "why": verdict.why,
+            })
+            data["hops"] = trail
+
+            if not ok:
+                data["status"] = "blocked" if data.get("blocked") else "unresolved"
+                log.info("[resolver] stop: %s", data["status"])
+                break
+
+            if not verdict.intermediate:
+                data["status"] = "ok"
+                log.info("[resolver] FINAL=%s", final)
+                break
+
+            log.info("[resolver] intermediate=true score=%d why=%s", verdict.score, verdict.why)
+            key = hops.normalize(final)
+            if key in seen or hops.same_target(final, cur):
+                # The chain ends on a page that only exists to send you on.
+                # Reporting it as the destination is the bug this guards.
+                data["ok"] = False
+                data["status"] = "loop"
+                data["final"] = final
+                data["hops"] = trail
+                data["input"] = url
+                data["note"] = f"Stopped on an intermediate page ({verdict.why}); no further hop available"
+                log.info("[resolver] stop: loop at %s", final)
+                break
+            seen.add(key)
+            cur = final
+        else:
+            data["ok"] = False
+            data["status"] = "max_hops"
+            data["note"] = f"Maximum redirect hops reached ({budget})"
+            log.info("[resolver] stop: max_hops")
+
+        data["elapsed"] = time.perf_counter() - t0
+        return data
+
+    async def _one_hop(self, url: str, allow: bool, force_browser: bool = False) -> Dict[str, Any]:
+        """Resolve a single address: HTTP fast path, browser when it is needed."""
         t0 = time.perf_counter()
         data = await self.fast.resolve(url)
         data["input"] = url
 
-        # Fast path worked -> done (usually 0.2-2s).
-        if data.get("ok") and data.get("final"):
+        # Fast path worked -> done (usually 0.2-2s). A forced browser run is the
+        # exception: the caller already decided the HTTP answer is not enough.
+        if data.get("ok") and data.get("final") and not force_browser:
             data["elapsed"] = time.perf_counter() - t0
             return data
 
@@ -188,7 +286,7 @@ class Engine:
             data["elapsed"] = time.perf_counter() - t0
             return data
 
-        heavy = data.get("needs_browser") or sites.needs_browser(url)
+        heavy = force_browser or data.get("needs_browser") or sites.needs_browser(url)
         if not allow or not heavy:
             data["elapsed"] = time.perf_counter() - t0
             if not allow and heavy:

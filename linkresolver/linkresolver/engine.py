@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 
 from .models import Result, Step
+from . import classify
 from . import rules as R
 
 UA = (
@@ -93,6 +94,53 @@ class Resolver:
     # ------------------------------------------------------------ public
 
     def resolve(self, raw_url: str) -> Result:
+        """Follow the chain until the destination is genuinely final.
+
+        A hop that lands on another resolver / gate / generated auth endpoint
+        becomes the input of the next hop. Reporting the first URL that merely
+        differs from the input is what put ``auth.*.workers.dev/generate?code=``
+        in the chat as a "bypassed link".
+        """
+        res = self._resolve_once(raw_url)
+        seen = {normalize(raw_url)}
+        hop = 1  # the first pass is hop 1
+
+        while res.ok and res.final_url and hop < self.max_hops:
+            hop += 1
+            nxt = res.final_url
+            verdict = classify.is_intermediate(
+                nxt,
+                prev_url=res.steps[-1].url if res.steps else raw_url,
+                known_gate=R.matches(R.host_of(nxt), R.NEEDS_BROWSER | R.PLAIN_SHORTENERS),
+            )
+            res.steps.append(Step(
+                "note", nxt,
+                detail=f"Hop {hop}: " + ("intermediate (" + verdict.why + "), resolving again"
+                                         if verdict.intermediate else "final destination"),
+                extra={"intermediate": verdict.intermediate, "score": verdict.score},
+            ))
+            if not verdict.intermediate:
+                break
+            if nxt in seen:
+                res.ok = False
+                res.note = f"Loop: {R.host_of(nxt)} points back to a page already visited"
+                break
+            seen.add(nxt)
+            follow = self._resolve_once(nxt, force_browser=False)
+            res.steps.extend(follow.steps)
+            res.final_url = follow.final_url or nxt
+            res.ok = follow.ok
+            res.method = follow.method or res.method
+            res.note = follow.note
+            res.blocked = res.blocked or follow.blocked
+        else:
+            if res.ok and hop >= self.max_hops:
+                res.ok = False
+                res.note = f"Maximum redirect hops reached ({self.max_hops})"
+
+        return res
+
+    def _resolve_once(self, raw_url: str, force_browser: Optional[bool] = None) -> Result:
         t0 = time.time()
         url = normalize(raw_url)
         res = Result(input_url=raw_url)
@@ -101,8 +149,10 @@ class Resolver:
             res.note = "Empty URL"
             return res
 
+        force = self.force_browser if force_browser is None else force_browser
+
         # Forced browser mode
-        if self.force_browser and self.allow_browser:
+        if force and self.allow_browser:
             from .browser import BrowserResolver
 
             res.steps.append(Step("note", url, detail="Forced browser mode, skipping the HTTP fast path"))
