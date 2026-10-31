@@ -72,6 +72,8 @@ class Engine:
         self.waiting = 0
         self.hits = 0
         self.misses = 0
+        # 只有真被 IP 墙挡过，才值得去维护代理池（否则纯属浪费带宽）
+        self.farm_needed = False
 
     # ------------------------------------------------------------------ 缓存
 
@@ -95,7 +97,14 @@ class Engine:
     # ------------------------------------------------------------ 浏览器兜底
 
     def _browser(self, url: str) -> Dict[str, Any]:
-        from linkresolver.browser import BrowserResolver
+        """浏览器兜底。Termux / 精简部署上没有 playwright 时不能把整条链拖死。"""
+        try:
+            from linkresolver.browser import BrowserResolver
+        except Exception as exc:  # ImportError, 缺系统库, 没装引擎
+            return {
+                "final": "", "ok": False, "steps": [], "method": "browser",
+                "note": f"Browser engine unavailable here ({type(exc).__name__})",
+            }
 
         br = BrowserResolver(
             headless=True,
@@ -179,6 +188,7 @@ class Engine:
 
         # 站点按 IP 拉黑：同一个出口 IP 上跑浏览器也没用，只能换 IP
         if data.get("blocked") == "vpn":
+            self.farm_needed = True
             data["needs_browser"] = False
             data["note"] = "Site blocks datacenter / VPN IPs"
             if self.pool is not None or self.farm is not None:

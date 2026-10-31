@@ -6,14 +6,16 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 try:
     from dotenv import load_dotenv
 
-    load_dotenv()
+    # 先读项目根目录的 .env（不管从哪个目录启动都能找到），再退回当前目录
+    if not load_dotenv(BASE_DIR / ".env"):
+        load_dotenv()
 except Exception:  # pragma: no cover
     pass
-
-BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -92,13 +94,16 @@ class Config:
     def problems(self) -> list[str]:
         out = []
         if not self.token:
-            out.append("BOT_TOKEN 未设置")
+            out.append("BOT_TOKEN is not set")
         elif ":" not in self.token:
-            out.append("BOT_TOKEN 格式不对（应为 123456:ABC-DEF…）")
+            out.append("BOT_TOKEN looks wrong (expected 123456:ABC-DEF…)")
         if not self.owner_ids:
-            out.append("OWNER_ID 未设置（管理员命令将不可用）")
+            out.append("OWNER_ID is not set — admin commands will be unavailable")
         if not (self.linkresolver_home / "linkresolver").is_dir():
-            out.append(f"找不到解析引擎：{self.linkresolver_home}/linkresolver")
+            out.append(
+                f"resolver engine not found at {self.linkresolver_home}/linkresolver — "
+                "clone the whole repo, or set LINKRESOLVER_HOME"
+            )
         return out
 
     def is_owner(self, user_id: int) -> bool:

@@ -31,6 +31,23 @@ def _self_test(cfg: Config, url: str, browser: bool) -> int:
     return 0 if data.get("ok") else 1
 
 
+def _env_report(cfg: Config) -> None:
+    """这台机器能干什么 — 部署时第一个要看的输出。"""
+    import platform
+
+    try:
+        import playwright  # noqa: F401
+        has_pw = True
+    except Exception:
+        has_pw = False
+
+    print("Environment")
+    print(f"  python     : {sys.version.split()[0]} · {platform.machine()} · {platform.system()}")
+    print(f"  browser    : {'playwright installed' if has_pw else 'not installed — HTTP path only'}")
+    print(f"  allow_browser={cfg.allow_browser} · proxy_farm={cfg.proxy_farm} "
+          f"({cfg.proxy_country}) · proxy={'set' if cfg.proxy else 'none'}")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="nickbot")
     ap.add_argument("--check", action="store_true", help="检查 .env 配置")
@@ -52,6 +69,8 @@ def main(argv=None) -> int:
               f" · browser {cfg.browser_concurrency}")
         probs = cfg.problems()
         print("  problems   : " + ("none" if not probs else "; ".join(probs)))
+        print()
+        _env_report(cfg)
         return 0 if not probs else 1
 
     if args.self_test:

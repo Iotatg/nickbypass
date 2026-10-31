@@ -1,0 +1,7 @@
+# Termux / phone deploys don't need playwright — and can't run it.
+# Playwright ships glibc Chromium builds; Android uses bionic, so there is
+# nothing to install. The HTTP + site-API path resolves most gates anyway.
+python-telegram-bot>=21.0
+python-dotenv>=1.0.0
+httpx>=0.27
+beautifulsoup4>=4.12

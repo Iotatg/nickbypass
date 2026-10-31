@@ -8,8 +8,9 @@ honestly when a site refuses the server's IP.
 nickbypass/
 ├── nickbot/          Telegram bot (python-telegram-bot v21, sqlite, httpx)
 │   ├── nickbot/      config, resolver, gates, proxy farm, handlers
-│   ├── tests/        87 offline checks (no network needed)
-│   └── README.md     commands, config, deploy
+│   ├── tests/        107 offline checks (no network needed)
+│   ├── DEPLOY.md     Termux / VPS / Windows / macOS / Docker / Pi / PaaS
+│   └── README.md     commands, config, how it resolves
 └── linkresolver/     standalone resolution engine (HTTP + Playwright)
 ```
 
@@ -27,6 +28,9 @@ python3 -m nickbot
 `linkresolver` is picked up from `../linkresolver` by default
 (`LINKRESOLVER_HOME` overrides it).
 
+Running it on a phone, a VPS, Windows, Docker or a Pi? **[nickbot/DEPLOY.md](nickbot/DEPLOY.md)**
+has copy-paste steps for each, including Termux on Android.
+
 ## What it does
 
 - Fast path: async HTTP/2 with cookie jar, 30x, `meta refresh`, JS `location`,
@@ -41,7 +45,7 @@ python3 -m nickbot
 
 ```bash
 cd nickbot
-python3 tests/test_offline.py   # 36
+python3 tests/test_offline.py   # 56
 python3 tests/test_fast.py      # 16
 python3 tests/test_chain.py     # 10
 python3 tests/test_farm.py      # 25

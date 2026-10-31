@@ -157,6 +157,29 @@ need = {"start", "help", "id", "mode", "supported", "status", "ip", "bypass", "s
 check("命令齐全", need.issubset(cmds), True)
 check("有回调处理", any("CallbackQueryHandler" in type(h).__name__ for g in app.handlers.values() for h in g), True)
 
+print("\n[6b] 代理池只在被墙之后才启动")
+
+
+class _StubFast:
+    async def resolve(self, url):
+        return {"input": url, "final": url, "ok": False, "blocked": "vpn",
+                "note": "VPN detected", "steps": [], "method": "http"}
+
+
+async def _wall():
+    e = rt.engine
+    e.farm = None
+    e.pool = None
+    before = e.farm_needed
+    e.fast = _StubFast()
+    await e._resolve_inner("https://vplink.in/x", False)
+    return before, e.farm_needed
+
+
+b0, b1 = asyncio.run(_wall())
+check("默认不维护代理池", b0, False)
+check("撞到 IP 墙后标记需要", b1, True)
+
 print("\n[7] 引擎并发计数")
 async def _conc():
     inflight, waiting = rt.engine.load()

@@ -191,19 +191,24 @@ async def cmd_supported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def _farm_loop(rt_obj: Runtime) -> None:
-    """后台保温：池子空了或整体过期就自动补货，用户永远不用手动 scan。"""
-    await asyncio.sleep(5)
+    """后台保温，但按需且温和。
+
+    以前一启动就扫 220 个代理，几百条 SYN 把出站连接占满，Telegram 的长轮询
+    直接超时（手机上尤其明显）。现在只有真的被 IP 墙挡过才补货，而且隔很久才动一次。
+    """
+    await asyncio.sleep(300)          # 启动后先让轮询站稳
     while True:
-        farm = rt_obj.engine.farm
-        if farm is not None:
+        engine = rt_obj.engine
+        farm = engine.farm
+        if farm is not None and engine.farm_needed:
             st = farm.stats()
             stale = st["fresh"] < max(3, st["total"] // 3)
             if st["total"] < 8 or stale:
                 try:
-                    await farm.refresh(limit=220, budget=50)
+                    await farm.refresh(limit=120, budget=40, workers=12)
                 except Exception:
                     pass
-        await asyncio.sleep(1200)
+        await asyncio.sleep(1800)
 
 
 async def _reply_proxy_check(msg, px: str, saved: bool = False) -> None:

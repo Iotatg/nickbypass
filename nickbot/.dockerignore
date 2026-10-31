@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+data/
+**/__pycache__
+**/*.pyc
+docs/
+*.png
+tests/
+.venv
+node_modules

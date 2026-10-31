@@ -38,8 +38,14 @@ _HOME = Path(
 if str(_HOME) not in sys.path:
     sys.path.insert(0, str(_HOME))
 
-from linkresolver import normalize  # noqa: E402
-from linkresolver.rules import extract_next, host_of  # noqa: E402
+try:
+    from linkresolver import normalize  # noqa: E402
+    from linkresolver.rules import extract_next, host_of  # noqa: E402
+except ModuleNotFoundError as _exc:  # pragma: no cover - deploy-time hint
+    raise ModuleNotFoundError(
+        f"resolver engine not importable from {_HOME}. Clone the whole repo "
+        "(nickbot/ + linkresolver/ side by side) or set LINKRESOLVER_HOME."
+    ) from _exc
 
 # --------------------------------------------------------------------------- 常量
 

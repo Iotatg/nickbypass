@@ -1,0 +1,25 @@
+services:
+  nickbot:
+    build:
+      context: .
+      args:
+        WITH_BROWSER: "0"        # set to "1" for the Chromium image
+    image: nickbot:latest
+    container_name: nickbot
+    restart: unless-stopped
+    env_file:
+      - nickbot/.env
+    environment:
+      ALLOW_BROWSER: "false"
+      TZ: Asia/Kolkata
+    volumes:
+      - nickdata:/app/nickbot/data
+    # long polling needs no inbound port — nothing to publish
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  nickdata:

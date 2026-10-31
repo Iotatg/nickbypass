@@ -1,0 +1,44 @@
+# /etc/systemd/system/nickbot.service
+#
+#   sudo cp deploy/nickbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nickbot
+#
+# Assumes the repo lives in /opt/nickbot and the venv in /opt/nickbot/.venv,
+# running as the unprivileged user "nickbot". Adjust if yours differs.
+
+[Unit]
+Description=Nick Bypass Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nickbot
+Group=nickbot
+WorkingDirectory=/opt/nickbot
+EnvironmentFile=/opt/nickbot/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/nickbot/.venv/bin/python -m nickbot
+Restart=always
+RestartSec=5
+# a stuck resolver should never take the process down with it
+TimeoutStopSec=20
+KillSignal=SIGINT
+
+# hardening — the bot needs no privileges at all
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nickbot/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

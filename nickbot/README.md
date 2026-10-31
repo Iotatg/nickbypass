@@ -87,6 +87,9 @@ set automatically), so a fresh deploy looks right without manual BotFather work.
 
 ## Run
 
+> Every platform — Termux/Android, VPS + systemd, Windows, macOS, Docker,
+> Raspberry Pi, PaaS — has a copy-paste guide in **[DEPLOY.md](DEPLOY.md)**.
+
 ```bash
 cd /workspace/nickbot
 pip install -r requirements.txt
@@ -221,7 +224,7 @@ tests/
 
 ```bash
 python3 tests/test_fast.py       # 16 checks — fast path, site API, VPN wall, dead destination
-python3 tests/test_offline.py    # 44 checks — extraction, routing, rate limit, DB, copy, escaping
+python3 tests/test_offline.py    # 56 checks — extraction, routing, rate limit, DB, copy, escaping
 python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer bounce
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 ```

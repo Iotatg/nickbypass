@@ -1,0 +1,40 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Start the bot inside tmux, so it survives closing the Termux session.
+#   bash deploy/termux-run.sh          start
+#   bash deploy/termux-run.sh stop     stop
+#   bash deploy/termux-run.sh log      follow the log
+set -e
+cd "$(dirname "$0")/.."
+
+SESSION=nickbot
+LOG=data/bot.log
+mkdir -p data
+
+case "${1:-start}" in
+  stop)
+    tmux kill-session -t "$SESSION" 2>/dev/null && echo "stopped" || echo "not running"
+    ;;
+  log)
+    tail -f "$LOG"
+    ;;
+  start)
+    termux-wake-lock 2>/dev/null || true
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+      echo "already running — attach with: tmux attach -t $SESSION"
+      exit 0
+    fi
+    tmux new-session -d -s "$SESSION" "python -m nickbot >> $LOG 2>&1"
+    sleep 3
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+      echo "started (tmux session: $SESSION)"
+      echo "attach: tmux attach -t $SESSION   ·   log: bash deploy/termux-run.sh log"
+    else
+      echo "failed to start — last log lines:"
+      tail -20 "$LOG"
+      exit 1
+    fi
+    ;;
+  *)
+    echo "usage: bash deploy/termux-run.sh [start|stop|log]"
+    ;;
+esac
