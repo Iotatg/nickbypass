@@ -63,7 +63,7 @@ too, if you have one.
 | `/bypass <url>`, `/b` | explicit call |
 | *(just paste a link)* | auto-detect, up to 5 per message, resolved in parallel |
 | `/mode auto\|fast\|browser` | per-user strategy |
-| `/supported` | known sites |
+| `/sites` | the shortener list — `/sites gplinks` searches it |
 | `/status` | uptime, in-flight, cache, proxy |
 | `/ip` | what the sites see — exit IP, ASN, and whether a proxy is needed here |
 | `/proxy <url>` · `/proxy clear` | owner only — fixed exit IP, no restart |
@@ -83,6 +83,28 @@ Every result carries buttons that depend on what happened:
 
 The command menu is set from code (`/start` shows the user set, owners get the admin
 set automatically), so a fresh deploy looks right without manual BotFather work.
+
+## Sites
+
+The bot knows ~2,400 shortener domains by name. That's two layers, kept apart on purpose:
+
+| Layer | Where | What it buys |
+|---|---|---|
+| Hand-written | `nickbot/registry.py` — 186 domains | a real display name *and* a strategy: `gt` (site API, sub-second), `gate` (browser), `short` (plain redirect) |
+| Generated | `nickbot/domains.txt` — 2,234 domains | recognition only: the bot can name the site, and it won't hand an ad page back as the "destination" |
+
+The generated list is rebuilt from public shortener catalogues — HaGeZi's
+`urlshortener` blocklist and uBlock Origin's link-shortener filters — folded to
+registrable domains and DNS-checked, so dead sites don't get claimed:
+
+```bash
+python3 tools/build_sites.py            # rebuild + verify (needs network)
+python3 tools/build_sites.py --no-dns   # skip the liveness pass
+```
+
+Being on the list is a convenience, not a requirement: anything unlisted still
+goes through the same engine. `/sites` counts what the bot **knows**, not what it
+can **try**.
 
 
 ## Run
@@ -212,22 +234,30 @@ nickbot/
   resolver.py    orchestration: fast → gate → browser → proxy retry, cache, dedupe
   handlers.py    commands, parallel processing, retry/browser buttons
   format.py      every word the bot says — cards, help, trace, pool/status views
-  sites.py       domain registry (60+ gates, 10 shorteners)
+  sites.py       lookup + strategy + /sites text, over the two layers below
+  registry.py    hand-written domains: name + strategy (gt / gate / short)
+  domains.txt    generated recognition list (2,234 domains, DNS-checked)
   db.py          sqlite: users, requests, bans
+tools/
+  build_sites.py rebuild domains.txt from public shortener catalogues
 tests/
-  test_fast.py   gate API / meta / JS / VPN wall / dead destination / concurrency
-  test_farm.py   proxy parsing (RFC1918 rejected), pool ranking, persistence
-  test_offline.py formatting, URL parsing, rate limit, DB, handler wiring
+  test_fast.py     gate API / meta / JS / VPN wall / dead destination / concurrency
+  test_farm.py     proxy parsing (RFC1918 rejected), pool ranking, persistence
+  test_offline.py  formatting, URL parsing, rate limit, DB, handler wiring
+  test_registry.py 2,400+ domains: no dupes, lookup rules, terminal logic, speed
 ```
 
 ## Tests
 
 ```bash
-python3 tests/test_fast.py       # 16 checks — fast path, site API, VPN wall, dead destination
+python3 tests/test_fast.py       # 19 checks — fast path, site API, VPN wall, dead destination
 python3 tests/test_offline.py    # 56 checks — extraction, routing, rate limit, DB, copy, escaping
 python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer bounce
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
+python3 tests/test_registry.py   # 52 checks — 2,400+ domains, lookup, terminal logic, speed
 ```
+
+162 checks, no network needed.
 
 `test_chain.py` rebuilds the real `vplink.in → pipefitter.in → destination` chain locally
 (escaped `\/` in the JS, "Please Wait.." / "Landing.." copy) and proves the resolver

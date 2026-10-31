@@ -185,8 +185,11 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_supported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/sites` 看全表，`/sites gplinks` 查一个。"""
+    q = " ".join(context.args or []).strip()
+    text = sites.search_text(q) if q else sites.supported_text()
     await update.effective_message.reply_text(
-        sites.supported_text(), parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW
+        text, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW
     )
 
 

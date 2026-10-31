@@ -177,6 +177,21 @@ def _explain(data: Dict[str, Any]) -> tuple[str, str, bool]:
             "<code>/mode browser</code> — a real browser clears that check.",
             True,
         )
+    if "invalid or expired" in low:
+        return (
+            "The shortener's own page says this link is dead — expired, or removed "
+            "by whoever created it.",
+            "Ask for a fresh link. There's nothing to unwrap here: the destination "
+            "was deleted, not hidden.",
+            True,
+        )
+    if "still on the shortener" in low:
+        return (
+            "The page never produced a destination — this shortener builds it with "
+            "JavaScript after the countdown.",
+            "<code>/mode browser</code> — a real browser lets that script finish.",
+            True,
+        )
     if any(k in low for k in ("timeout", "timed out", "connect", "read error", "network")):
         return (
             "The site stopped answering partway down the chain.",
@@ -248,6 +263,7 @@ def trace_card(data: Dict[str, Any]) -> str:
 
 
 def help_text(is_owner: bool = False) -> str:
+    known = sites.stats()["total"]
     base = (
         "<b>Nick Bypass</b>\n"
         "Paste a shortlink and I'll walk the ad chain for you, then hand back the "
@@ -257,7 +273,8 @@ def help_text(is_owner: bool = False) -> str:
         "Up to 5 links in one message — spaces or new lines, both fine.\n\n"
         "<b>When you need more</b>\n"
         "· <code>/mode</code> — fast, auto or browser\n"
-        "· <code>/supported</code> — the sites I already know\n"
+        f"· <code>/sites</code> — {known:,} shorteners I know by name "
+        "(<code>/sites gplinks</code> to search)\n"
         "· <code>/status</code> — engine health, cache, queue\n"
         "· <code>/ip</code> — check whether this machine even needs a proxy\n"
         "· <code>/id</code> — your Telegram ID\n\n"

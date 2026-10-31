@@ -21,7 +21,7 @@ USER_COMMANDS = [
     BotCommand("start", "how this works"),
     BotCommand("bypass", "resolve a link — or just paste it"),
     BotCommand("mode", "fast · auto · browser"),
-    BotCommand("supported", "sites I already know"),
+    BotCommand("sites", "known sites, /sites gplinks to search"),
     BotCommand("status", "engine health and cache"),
     BotCommand("ip", "do I need a proxy here?"),
     BotCommand("id", "your Telegram ID"),

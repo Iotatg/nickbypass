@@ -82,15 +82,12 @@ CHALLENGE_MARKERS = (
     "error code: 1000",
 )
 
-# 同属一个建站模板（"GT Links"）的站点：都有 POST /links/go
-GT_FAMILY = (
-    "vplink", "gplinks", "gplink", "arolinks", "liteshort", "inshorturl",
-    "vipshort", "cpmshort", "nowshort", "earn4link", "earnlink", "babylinks",
-    "indiaearnx", "submais", "unlocktoearn", "easysky", "linkpays", "makelinks",
-    "instantlinks", "bindaaslinks", "linksflys", "linksfire", "srnky",
-    "shortwala", "lksfy", "iflylink", "alpharede", "short4cash", "surajitlinks",
-    "rempo", "remso", "kogap", "tii.la", "tpi.li", "oii.la", "mdisk", "aylink",
-    "tnlink", "clk.sh", "za.gl",
+# 同属一个建站模板（"GT Links"）的站点：都有 POST /links/go。
+# 名单本身在 registry.py 里（kind="gt"），这里只留一个兜底，防止 registry 缺失。
+GT_FAMILY_FALLBACK = (
+    "vplink", "gplinks", "arolinks", "liteshort", "inshorturl",
+    "vipshort", "cpmshort", "earn4link", "earnlink", "shrinkme",
+    "tii.la", "tpi.li", "oii.la", "clk.sh", "za.gl",
 )
 
 # 纯静态资源：不要为它们浪费一跳
@@ -101,8 +98,17 @@ ASSET_EXT = (
 
 
 def _is_gt(host: str) -> bool:
+    """是不是那个同模板的 PHP 短链系统（有 POST /links/go）。"""
     h = (host or "").lower()
-    return any(g in h for g in GT_FAMILY)
+    try:
+        from . import sites as _sites
+
+        s = _sites.lookup("https://" + h + "/")
+        if s is not None:
+            return s.kind == _sites.KIND_GT
+    except Exception:
+        pass
+    return any(g in h for g in GT_FAMILY_FALLBACK)
 
 
 def _slug_of(url: str) -> str:
@@ -142,6 +148,39 @@ def _challenge(html: str) -> bool:
     return any(m in low for m in CHALLENGE_MARKERS) and len(low) < 200_000
 
 
+# 短链站自己承认链接有问题时用的文案。只在"这个域名是短链站"时才查，
+# 否则任何内容页都可能误伤。
+DEAD_MARKERS = (
+    "there might be a problem with the requested link",
+    "this link has expired",
+    "link has expired",
+    "link you requested",
+    "this link is invalid",
+    "this link is no longer",
+    "link not found",
+    "url not found",
+    "invalid or expired",
+    "this url is invalid",
+)
+
+
+def _site_of(url: str):
+    try:
+        from . import sites as _sites
+
+        return _sites.lookup(url)
+    except Exception:
+        return None
+
+
+def _dead_link(html: str, url: str) -> bool:
+    """短链站返回"链接无效 / 已过期"页 —— 这不是解析成功。"""
+    if _site_of(url) is None:
+        return False
+    low = html.lower()
+    return any(m in low for m in DEAD_MARKERS)
+
+
 # --------------------------------------------------------------------------- 引擎
 
 
@@ -165,7 +204,8 @@ def _is_terminal(cur: str, start_host: str) -> bool:
     try:
         from . import sites as _sites
 
-        if _sites.is_gate("https://" + h + "/"):
+        # 传完整 URL：生成名单里的域名只有路径像短码时才算广告站
+        if _sites.is_gate(cur):
             return False
     except Exception:
         pass
@@ -315,6 +355,15 @@ class FastResolver:
 
                 html = resp.text or ""
 
+                # 0) 短链站自己说"这链接无效 / 过期了" —— 别把警告页当终点
+                if _dead_link(html, cur):
+                    steps.append({"kind": "blocked", "url": cur, "status": resp.status_code,
+                                  "detail": "Shortener reports an invalid / expired link"})
+                    out["final"] = cur
+                    out["note"] = ("The shortener itself says this link is invalid or expired — "
+                                   "nothing to unpack.")
+                    break
+
                 # 记下"已经离开广告门、且正常返回"的最深一跳
                 if _is_terminal(cur, start_host):
                     best_dest = cur
@@ -378,11 +427,28 @@ class FastResolver:
                         continue
 
                 # 5) 没有下一跳：是终点，还是"卡在广告门上"？
-                if host_of(cur) == start_host and _gate_score(html) >= 3:
+                still_gate = False
+                try:
+                    from . import sites as _sites
+
+                    still_gate = _sites.is_gate(cur)
+                except Exception:
+                    pass
+
+                if host_of(cur) == start_host and (_gate_score(html) >= 3 or still_gate):
                     steps.append({"kind": "note", "url": cur,
-                                  "detail": "Countdown / timer detected — needs browser"})
-                    out["needs_browser"] = True
-                    out["note"] = "Ad gate with countdown — browser required"
+                                  "detail": "No destination in the HTML — still on the shortener"})
+                    # gate / gt 值得让浏览器再试一次；纯跳转站就算了，白等
+                    heavy = True
+                    try:
+                        from . import sites as _sites
+
+                        heavy = _sites.needs_browser(cur)
+                    except Exception:
+                        pass
+                    out["needs_browser"] = heavy
+                    out["note"] = ("Still on the shortener page — the destination is built by "
+                                   "JavaScript, not in the HTML")
                     break
 
                 out["final"] = cur

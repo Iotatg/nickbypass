@@ -19,7 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from nickbot.gates import FastResolver  # noqa: E402
+from nickbot import sites                    # noqa: E402
+from nickbot.gates import FastResolver       # noqa: E402
 
 PORT = 8799
 TARGET = "https://target.example/final?ok=1"
@@ -131,6 +132,19 @@ def main() -> int:
 
     asyncio.run(run())
     srv.shutdown()
+
+    print("\n[7] 短链站自曝链接失效（bit.ly 那种警告页）")
+    from nickbot import gates as G
+
+    real = G._site_of
+    G._site_of = lambda url: sites.Site("bit.ly", "Bit.ly", sites.KIND_SHORT) \
+        if "bit.ly" in url else None
+    warn = ("<html><head><title>Warning!</title></head><body>"
+            "There might be a problem with the requested link</body></html>")
+    check("短链站 -> 判定失效", G._dead_link(warn, "https://bit.ly/3xYz") is True)
+    check("普通站点 -> 不误判", G._dead_link(warn, "https://example.com/blog/x") is False)
+    check("短链站正常页 -> 不算失效", G._dead_link("<html>hello</html>", "https://bit.ly/x") is False)
+    G._site_of = real
 
     print(f"\n结果：{ok} 通过 / {fail} 失败")
     return 0 if fail == 0 else 1
