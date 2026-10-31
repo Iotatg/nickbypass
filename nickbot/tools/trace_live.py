@@ -780,25 +780,105 @@ class SeleniumHooks:
                 "script, iframe, redirect target)")
 
     # -- html evidence ---------------------------------------------------
-    def scan_html(self, token: str) -> None:
+    def scan_html(self, token: str, gate: str = "") -> None:
+        """Report what the snapshot really is, then fetch the gate properly.
+
+        ``driver.get`` blocks until the page has finished loading *including*
+        its own script navigations, so by the time we can read ``page_source``
+        the browser is already on the last page of the chain. The old label
+        said "gate document" and then reported "no literal destination", which
+        was reading the wrong page and calling it evidence. The snapshot is now
+        labelled by the URL it actually came from, and the gate is fetched
+        separately - same cookies and UA, no JavaScript - so a "the URL is a
+        literal in the HTML" verdict means what it says.
+        """
         h = self.first_html or ""
         if not h:
             out("[html] no snapshot captured")
-            return
-        out(f"[html] gate document {len(h)} bytes from {self.first_html_url or '-'}")
+        else:
+            where = self.first_html_url or "-"
+            same_page = bool(gate) and where.rstrip("/") == gate.rstrip("/")
+            out(f"[html] page_source snapshot {len(h)} bytes from {where}")
+            if not same_page:
+                out("[html] that is the LAST page of the chain, not the gate - "
+                    "driver.get() blocks through the script navigations, so no "
+                    "gate snapshot was possible from page_source")
+            self._scan(h, token, "html")
+
+        if gate:
+            self.fetch_gate(gate, token)
+
+    def _scan(self, h: str, token: str, tag: str) -> None:
         n = h.lower().count(token.lower()) if token else 0
-        out(f"[html] '{token}' appears {n}x")
+        out(f"[{tag}] '{token}' appears {n}x")
         if n:
             for m in list(re.finditer(re.escape(token), h, re.I))[:3]:
                 s = max(0, m.start() - 90)
                 snippet = re.sub(r"\s+", " ", h[s:m.end() + 90])
-                out(f"[html]   ...{snippet}...")
+                out(f"[{tag}]   ...{snippet}...")
         for pat in ('location.href', 'window.location', 'location.replace',
                     'location.assign', 'http-equiv="refresh"', "http-equiv='refresh'",
                     'window.open', '.submit('):
             c = h.lower().count(pat.lower())
             if c:
-                out(f"[html] pattern {pat!r} x{c}")
+                out(f"[{tag}] pattern {pat!r} x{c}")
+
+    def fetch_gate(self, gate: str, token: str) -> None:
+        """Fetch the gate HTML without executing JavaScript.
+
+        This is the only way to tell "the destination URL is written in the
+        page" (B) from "a script or an API call built it" (D): the browser's
+        own copy is gone by the time we can read it. No JS runs here, so a
+        Cloudflare challenge page may come back instead of the real document -
+        that is reported as-is, not worked around.
+        """
+        try:
+            import requests
+        except Exception as exc:
+            out(f"[gate-html] requests unavailable: {type(exc).__name__}")
+            return
+        ua = ""
+        cookies = ""
+        try:
+            drv = self.drivers[-1] if self.drivers else None
+            if drv is not None:
+                ua = drv.execute_script("return navigator.userAgent") or ""
+                cookies = "; ".join(f"{c['name']}={c['value']}"
+                                    for c in drv.get_cookies())
+        except Exception:
+            pass
+        try:
+            r = requests.get(gate, timeout=20, allow_redirects=False,
+                             headers={"User-Agent": ua or "Mozilla/5.0",
+                                      "Accept": "text/html,*/*",
+                                      "Cookie": cookies} if cookies else
+                                     {"User-Agent": ua or "Mozilla/5.0",
+                                      "Accept": "text/html,*/*"})
+        except Exception as exc:
+            out(f"[gate-html] fetch failed: {type(exc).__name__}: {exc}")
+            return
+        loc = r.headers.get("Location", "")
+        out(f"[gate-html] GET {gate} -> {r.status_code} "
+            f"{len(r.content)} bytes  content-type={r.headers.get('Content-Type', '-')}"
+            + (f"  location={loc}" if loc else ""))
+        if r.status_code in (301, 302, 303, 307, 308):
+            out(f"[gate-html] the gate answers {r.status_code} directly - "
+                f"the destination is in the Location header: {loc}")
+            return
+        body = r.text or ""
+        low = body.lower()
+        if "challenge-platform" in low or "cf-chl" in low or "just a moment" in low:
+            out("[gate-html] this looks like a Cloudflare challenge page, so the "
+                "document below is NOT the real gate HTML - no JS ran here")
+        self._scan(body, token, "gate-html")
+        code = gate.rstrip("/").rsplit("/", 1)[-1]
+        if code and len(code) <= 24 and code != token:
+            out(f"[gate-html] gate code {code!r} appears {low.count(code.lower())}x "
+                f"in the document")
+        for pat in ("insurancesstudy", "uiso=", "location =", "location="):
+            c = low.count(pat.lower())
+            if c:
+                out(f"[gate-html] pattern {pat!r} x{c}")
 
     # -- mechanism -------------------------------------------------------
     def chain(self, gate: str) -> List[Dict[str, str]]:
@@ -811,14 +891,22 @@ class SeleniumHooks:
         def same(a: str, b: str) -> bool:
             return bool(a) and bool(b) and a.rstrip("/") == b.rstrip("/")
 
+        def navigable(u: str) -> bool:
+            # about:blank and the blocked-ad frames are not steps in the chain;
+            # neither is a subresource (a 302 on a script is not a navigation).
+            return bool(u) and u.startswith(("http://", "https://"))
+
         edges: List[Dict[str, str]] = []
         cur = gate
         for r in self.net:
-            if r["kind"] == "nav-req" and r.get("url") and not same(r["url"], cur):
+            if r["kind"] == "nav-req" and navigable(r.get("url", "")) \
+                    and not same(r["url"], cur):
                 edges.append({"from": cur, "to": r["url"],
                               "how": r.get("reason") or "navigation"})
                 cur = r["url"]
-            elif r["kind"] == "req" and r.get("frm") and not same(r["url"], r["frm"]):
+            elif r["kind"] == "req" and r.get("type") == "Document" \
+                    and navigable(r["url"]) and r.get("frm") \
+                    and not same(r["url"], r["frm"]):
                 edges.append({"from": r["frm"], "to": r["url"],
                               "how": f"http{r.get('status')}"})
                 if same(r["frm"], cur):
@@ -832,25 +920,28 @@ class SeleniumHooks:
 
         first = edges[0]
         how = first["how"]
-        tail = ""
-        if not (dest and first["to"].rstrip("/") == dest.rstrip("/")):
-            rest = [e["how"] for e in edges[1:]]
-            tail = f", then {len(rest)} more step(s): {', '.join(rest[:4])}"
+        tgt = first["to"]
+        rest = [e["how"] for e in edges[1:]]
+        tail = f" (+{len(rest)} more hop(s): {', '.join(rest[:4])})" if rest else ""
 
         if how.startswith("http3") or how.startswith("http2"):
             return "A", (f"the gate document itself answered {how[4:]} with a Location "
-                         f"to {first['to'][:70]}{tail}")
+                         f"to {tgt[:70]}{tail}")
         if how == "metaTagRefresh":
-            return "C", f"meta refresh to {first['to'][:70]}{tail}"
+            return "C", f"meta refresh to {tgt[:70]}{tail}"
         if how == "scriptInitiated":
-            if dest and dest in self.first_html:
-                return "B", ("the destination URL is a literal in the gate HTML and a "
+            literal = bool(tgt) and tgt in self.first_html
+            if not literal and dest:
+                literal = dest in self.first_html
+            if literal:
+                return "B", ("the target URL is a literal in the gate HTML and a "
                              f"script navigated to it{tail}")
-            return "D", ("no literal destination in the gate HTML - a script or API "
-                         f"response produced the URL, then navigated{tail}")
+            return "D", ("the gate's own script navigated to a URL that is NOT a "
+                         f"literal in the gate HTML - it was built at runtime: "
+                         f"{tgt[:70]}{tail}")
         if how in ("link", "formSubmission", "linkClicked"):
-            return "E", f"a {how} started the navigation to {first['to'][:70]}{tail}"
-        return "E", f"navigation started by {how}{tail}"
+            return "E", f"a {how} started the navigation to {tgt[:70]}{tail}"
+        return "E", f"navigation started by {how} to {tgt[:70]}{tail}"
 
     def chain_line(self, gate: str, dest: str) -> str:
         edges = self.chain(gate)
@@ -901,7 +992,10 @@ class SeleniumHooks:
         if dest:
             try:
                 from urllib.parse import urlparse
-                self.scan_html(urlparse(dest).hostname.split(".")[0] if urlparse(dest).hostname else "")
+                self.scan_html(
+                    urlparse(dest).hostname.split(".")[0] if urlparse(dest).hostname else "",
+                    gate=gate,
+                )
             except Exception:
                 pass
 
@@ -915,6 +1009,38 @@ class SeleniumHooks:
 
 
 self_hooks: SeleniumHooks
+
+
+def dump_device_source(target: str) -> int:
+    """Write the browser.py that is actually installed on this device.
+
+    The phone's file is not in git (its sha256 matches no commit), so every
+    change to it has been written blind. This copies the real file out so it
+    can be committed, diffed and patched like any other source file.
+    """
+    import hashlib
+    import inspect
+    try:
+        from linkresolver.browser import BrowserResolver
+        path = inspect.getsourcefile(BrowserResolver) or ""
+        whole = inspect.getsource(sys.modules[BrowserResolver.__module__])
+    except Exception as exc:
+        out(f"[dump] failed: {type(exc).__name__}: {exc}")
+        return 2
+    data = whole.encode("utf-8")
+    sha = hashlib.sha256(data).hexdigest()[:16]
+    lines = whole.count("\n") + 1
+    out(f"[dump] {path}")
+    out(f"[dump] {lines} lines, {len(data)} bytes, sha256 {sha}")
+    if target == "-":
+        sys.stdout.write(whole)
+        return 0
+    p = pathlib.Path(target).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(whole, encoding="utf-8")
+    out(f"[dump] wrote {p}")
+    out("[dump] commit it: git add -f " + target)
+    return 0
 
 
 def selenium_source_dump() -> None:
@@ -997,6 +1123,11 @@ def main(argv: List[str]) -> int:
         except Exception:
             repeat = 2
         del args[i:i + 2]
+    if "--dump-src" in args:
+        i = args.index("--dump-src")
+        target = args[i + 1] if len(args) > i + 1 and not args[i + 1].startswith("--") else "-"
+        del args[i:i + (1 if target == "-" else 2)]
+        return dump_device_source(target)
     url = args[0] if args else DEFAULT_URL
     timeout = float(args[1]) if len(args) > 1 else 30.0
 
