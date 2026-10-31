@@ -333,6 +333,7 @@ tests/
   test_registry.py 2,400+ domains: no dupes, lookup rules, terminal logic, speed
   test_remote.py   log tail/rotate, diagnostics, execv restart, owner gate
   test_hops.py     waypoint hints, evidence-based decisions, auth endpoints, the hop loop
+  test_browser_trail.py  real Chromium: gate -> auth -> ad, and the trail that saves it
 ```
 
 ## Tests
@@ -345,12 +346,14 @@ python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer boun
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 python3 tests/test_registry.py   # 52 checks — 2,400+ domains, lookup, terminal logic, speed
 python3 tests/test_remote.py     # 31 checks — /diag /restart /update /logs plumbing
-python3 tests/test_hops.py       # 82 checks — hints, decide(), auth endpoints, hop loop
+python3 tests/test_hops.py       # 91 checks — hints, decide(), auth endpoints, hop loop
+python3 tests/test_browser_trail.py  # 7 checks — real Chromium: the auth URL is in the trail
 ```
 
-305 checks, no network needed. The resolver engine has its own suite:
-`python3 ../linkresolver/tests/test_multihop.py` (35 checks, includes a parity
-test so the bot's classifier and the CLI's copy cannot drift).
+321 checks. Everything except `test_browser_trail.py` runs offline; that one
+needs Playwright + Chromium and skips cleanly without them. The resolver engine
+has its own suite: `python3 ../linkresolver/tests/test_multihop.py` (37 checks,
+includes a parity test so the bot's classifier and the CLI's copy cannot drift).
 
 `test_gate.py` is the one that matters for the bug people hit: a local server
 imitates a GT gate that refuses `/links/go` without the CSRF pair, answers `#`

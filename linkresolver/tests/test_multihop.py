@@ -207,6 +207,15 @@ def main() -> int:
         check("both leave a coupon code alone",
               classify.is_stop_endpoint("https://shop.example.com/product?code=SUMMER20") is False
               and bot_hops.is_stop_endpoint("https://shop.example.com/product?code=SUMMER20") is False)
+        trail = [{"kind": "redirect", "url": "https://vplink.in/nAKfh"},
+                 {"kind": "redirect", "url": AUTH},
+                 {"kind": "redirect", "url": FINAL}]
+        check("both read a browser trail the same way",
+              classify.first_stop_endpoint(trail) == AUTH
+              and bot_hops.first_stop_endpoint(trail) == AUTH, classify.first_stop_endpoint(trail))
+        check("both ignore a clean trail",
+              classify.first_stop_endpoint([{"url": FINAL}]) == ""
+              and bot_hops.first_stop_endpoint([{"url": FINAL}]) == "")
         check("both continue on a handed-over address",
               classify.decide(AUTH, next_url=FINAL, known_gate=False).action == classify.CONTINUE)
 

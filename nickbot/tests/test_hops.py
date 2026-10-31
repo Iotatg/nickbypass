@@ -184,6 +184,42 @@ def main() -> int:
     check("_one_hop never fetches it", out["final"] == AUTH and out["ok"] is True, out)
     check("method is endpoint", out["method"] == "endpoint", out.get("method"))
 
+    print("\n[5c] the browser drives *through* the auth endpoint")
+    check("first_stop_endpoint reads a dict trail",
+          hops.first_stop_endpoint([{"kind": "redirect", "url": "https://vplink.in/x"},
+                                    {"kind": "redirect", "url": AUTH}]) == AUTH)
+    check("...ignores a clean trail",
+          hops.first_stop_endpoint([{"kind": "redirect", "url": FINAL}]) == "")
+    check("...and an empty one", hops.first_stop_endpoint([]) == "")
+
+    AD = "https://pipefitter.in/studyinsurances/best-cancer-treatment-hospitals/"
+    trail = [
+        {"kind": "redirect", "url": "https://vplink.in/nAKfh", "detail": "In-browser navigation"},
+        {"kind": "redirect", "url": AUTH, "detail": "In-browser navigation"},
+        {"kind": "redirect", "url": AD, "detail": "In-browser navigation"},
+    ]
+
+    class FastSaysBrowser:
+        """The gate API refused, so the browser runs - the live vplink case."""
+
+        async def resolve(self, url):
+            return {"input": url, "final": "", "ok": False, "method": "http",
+                    "steps": [], "note": "Still on the shortener page",
+                    "blocked": "", "needs_browser": True}
+
+    e.fast = FastSaysBrowser()
+    e._browser = lambda url: {"final": AD, "ok": True, "steps": trail,
+                              "note": "Reached the destination in browser mode"}
+    out = asyncio.run(Engine._one_hop(e, "https://vplink.in/nAKfh", True))
+    check("the page it drove through wins", out["final"] == AUTH, out["final"])
+    check("not the ad page it ended on", "pipefitter" not in out["final"], out["final"])
+    check("marked ok", out["ok"] is True)
+    check("says why", "auth endpoint" in out["note"], out["note"])
+
+    out = asyncio.run(e._resolve_inner("https://vplink.in/nAKfh", True))
+    check("the whole chain reports the auth endpoint", out["final"] == AUTH, out["final"])
+    check("status ok", out.get("status") == "ok", out.get("status"))
+
     print("\n[6] HTTP decoy, browser gets the real exit (other link types)")
     # A /go/ waypoint, not an auth endpoint: this is the case where the browser
     # is still worth spending, because the gate feeds HTTP a decoy.

@@ -371,6 +371,22 @@ def decide(
     return Decision(FINAL, url, "no further navigation on this page", hint)
 
 
+def first_stop_endpoint(steps) -> str:
+    """The first credential endpoint in a navigation trail, or ``""``.
+
+    The browser reports where it *ended up*. A gate chain that runs
+    ``vplink -> auth endpoint -> ad page`` therefore looks like a clean win for
+    the ad page, while the auth endpoint only survives in the trail of
+    main-frame navigations. This reads that trail. Accepts dicts (the bot's
+    mapped steps) and ``Step`` objects (the engine's).
+    """
+    for step in steps or []:
+        url = step.get("url", "") if isinstance(step, dict) else getattr(step, "url", "")
+        if url and is_stop_endpoint(url):
+            return url
+    return ""
+
+
 def same_target(a: str, b: str) -> bool:
     """Same page, ignoring a trailing slash and the fragment."""
     ua = normalize(a).split("#", 1)[0].rstrip("/")

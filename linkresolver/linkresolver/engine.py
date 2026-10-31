@@ -366,7 +366,14 @@ class Resolver:
                 b_url, b_steps, b_note = br.resolve(url)
                 res.steps.extend(b_steps)
                 res.method = "browser"
-                if b_url:
+                # Same rule as the bot: the browser returns the page it ended
+                # on, and after an auth endpoint that page is the ad layer.
+                stop = classify.first_stop_endpoint(b_steps)
+                if stop:
+                    res.final_url = stop
+                    res.ok = True
+                    res.note = "Browser passed through the auth endpoint - that is the destination"
+                elif b_url:
                     res.final_url = b_url
                     res.ok = b_url != normalize(raw_url)
                     res.note = b_note or "Resolved in browser mode"

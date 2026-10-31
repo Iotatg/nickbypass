@@ -339,6 +339,25 @@ class Engine:
         data["steps"] = (data.get("steps") or []) + (b.get("steps") or [])
         data["method"] = "browser"
         data["elapsed"] = time.perf_counter() - t0
+
+        # Print the trail the browser actually walked: without it, "the gate
+        # ended on an ad page" is indistinguishable from "the link is dead".
+        walked = [s.get("url", "") for s in (b.get("steps") or [])
+                  if s.get("kind") in ("redirect", "click") and s.get("url")]
+        if walked:
+            log.info("[resolver] browser trail: %s", " -> ".join(dict.fromkeys(walked)))
+
+        # The browser reports where it ended up, and a gate chain that runs
+        # gate -> auth endpoint -> ad page ends on the ad page. The auth
+        # endpoint is the destination, so read the navigation trail instead of
+        # trusting the last URL.
+        stop = hops.first_stop_endpoint(b.get("steps") or [])
+        if stop:
+            data["ok"] = True
+            data["final"] = stop
+            data["note"] = "Browser passed through the auth endpoint - that is the destination"
+            return data
+
         if b.get("ok"):
             data["ok"] = True
             data["final"] = b["final"]
