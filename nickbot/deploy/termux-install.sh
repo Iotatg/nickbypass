@@ -141,7 +141,9 @@ if [ -d "$HOME/.termux" ]; then
   warn "install the Termux:Boot app (F-Droid) once, or autostart will not fire"
 fi
 
+# A re-run has to pick up the new code, so stop whatever is running first.
 rm -f data/stopped
+bash deploy/termux-run.sh stop >/dev/null 2>&1 || true
 bash deploy/termux-run.sh start || die "the bot did not start — see the log above"
 
 cat <<EOF
