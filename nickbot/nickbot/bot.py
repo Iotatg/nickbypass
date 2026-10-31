@@ -35,6 +35,10 @@ COMMANDS: List[Tuple[str, Callable, str]] = [
     ("ban", H.cmd_ban, "block a user"),
     ("unban", H.cmd_unban, "let a user back in"),
     ("proxy", H.cmd_proxy, "exit IP and local pool"),
+    ("diag", H.cmd_diag, "machine, uptime, battery"),
+    ("restart", H.cmd_restart, "restart the bot"),
+    ("update", H.cmd_update, "pull latest code, restart"),
+    ("logs", H.cmd_logs, "last log lines"),
 ]
 
 ALIASES = {"help": H.cmd_help, "b": H.cmd_bypass, "supported": H.cmd_supported}

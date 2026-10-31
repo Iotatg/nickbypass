@@ -524,6 +524,65 @@ async def cmd_unban(ev: Event) -> None:
 
 
 @owner_only
+async def cmd_diag(ev: Event) -> None:
+    from . import remote
+
+    up = int(time.time() - ev.rt.started)
+    rows = remote.diagnostics(up)
+    await ev.reply(
+        F.diag_card(rows, remote.where_am_i(), remote.autostart_installed())
+    )
+
+
+@owner_only
+async def cmd_logs(ev: Event) -> None:
+    from . import remote
+
+    n = 30
+    if ev.args and ev.args[0].isdigit():
+        n = max(5, min(int(ev.args[0]), 200))
+    await ev.reply(F.logs_card(remote.tail_log(n), n))
+
+
+@owner_only
+async def cmd_restart(ev: Event) -> None:
+    from . import remote
+
+    await ev.reply(
+        "♻️ Restarting now — I'll be back in a few seconds.\n"
+        f"<i>{remote.head_commit()} · {remote.where_am_i()}</i>"
+    )
+    remote.restart_soon()
+
+
+@owner_only
+async def cmd_update(ev: Event) -> None:
+    from . import remote
+
+    if not remote.is_git_repo():
+        await ev.reply(
+            "This copy is not a git checkout, so <code>/update</code> has "
+            "nothing to pull. Re-run the installer once to fix that."
+        )
+        return
+    msg = await ev.reply("⬇️ Pulling the latest code…")
+    ok, text, req = await asyncio.to_thread(remote.pull)
+    if not ok:
+        await msg.edit(
+            "❌ <b>Update failed</b>\n\n<pre>" + F.h(text[:900]) + "</pre>\n"
+            "<i>Nothing was restarted, the old version is still running.</i>"
+        )
+        return
+    tail = "\n\n⚠️ Dependencies changed — run <code>pip install -r "
+    tail += "requirements-termux.txt</code> once." if req else ""
+    await msg.edit(
+        "✅ <b>Updated</b>\n\n<pre>" + F.h(text[:700]) + "</pre>" + tail +
+        "\n\n♻️ Restarting…"
+    )
+    remote.restart_soon()
+
+
+@owner_only
 async def cmd_broadcast(ev: Event) -> None:
     text = ev.text.partition(" ")[2].strip()
     if not text:

@@ -120,7 +120,21 @@ Then, in Android settings → Apps → Termux → Battery → **Unrestricted**
 background activity"). Without this, Android freezes the process after a few
 minutes of screen-off and the bot goes silent.
 
-### 1.4 Clone and install
+### 1.4 One command (recommended)
+
+Paste this into Termux and answer two questions — token and your numeric ID:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Iotatg/nickbypass/main/nickbot/deploy/termux-install.sh)
+```
+
+It installs the packages, clones the repo to `~/nickbypass`, installs the Python
+deps, writes `.env` (mode 600), runs `--check`, installs the boot hook and starts
+the bot in `tmux`. Re-running it later is safe: an existing `.env` is left alone
+and the checkout is fast-forwarded instead of cloned again.
+
+<details>
+<summary>Manual route (if you prefer doing it step by step)</summary>
 
 ```bash
 cd ~
@@ -171,27 +185,43 @@ It starts the bot inside a `tmux` session, so closing Termux or switching apps
 doesn't kill it. Handy commands:
 
 ```bash
+bash deploy/termux-run.sh status   # is it up?
 bash deploy/termux-run.sh log      # follow the log
-bash deploy/termux-run.sh stop     # stop it
+bash deploy/termux-run.sh stop     # stop it (and skip autostart next boot)
 tmux attach -t nickbot             # look inside the session (Ctrl+B then D to leave)
 ```
 
 Now send your bot a link in Telegram. If it answers, you're done.
 
+</details>
+
 ### 1.7 Start automatically on boot
 
-Install **Termux:Boot** from F-Droid, open it once, then:
+Install **Termux:Boot** from F-Droid and open it once, then:
 
 ```bash
-mkdir -p ~/.termux/boot
-cat > ~/.termux/boot/nickbot.sh <<'EOF'
-#!/data/data/com.termux/files/usr/bin/sh
-termux-wake-lock
-cd $HOME/nickbypass/nickbot
-tmux new-session -d -s nickbot "python -m nickbot >> data/bot.log 2>&1"
-EOF
-chmod +x ~/.termux/boot/nickbot.sh
+bash deploy/termux-boot.sh
 ```
+
+That writes `~/.termux/boot/nickbot.sh`, which starts the bot 8 seconds after
+boot unless you stopped it on purpose (`deploy/termux-run.sh stop` leaves a
+`data/stopped` marker). `bash deploy/termux-boot.sh remove` undoes it.
+
+### 1.7b Managing it from Telegram (no terminal at all)
+
+Once the bot is running, these owner-only commands replace everything you would
+otherwise open Termux for:
+
+| Command | What it does |
+|---|---|
+| `/diag` | host, python, uptime, commit, RAM, disk, battery, autostart state |
+| `/restart` | replaces the process in place (`os.execv`, same PID, works under tmux/systemd/Docker) |
+| `/update` | `git pull --ff-only` then restart; refuses if you have local edits |
+| `/logs 40` | last N log lines, straight from `data/bot.log` |
+
+So the usual loop is: change something on GitHub → send `/update` → done. If the
+bot ever goes silent, `/diag` tells you whether it was the phone (battery, RAM)
+or the code (commit).
 
 ### 1.8 Do you need a proxy on a phone?
 

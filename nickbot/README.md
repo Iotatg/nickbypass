@@ -71,6 +71,10 @@ too, if you have one.
 | `/proxy scan [IN] [url]` | owner only — refill + verify the pool now |
 | `/proxy list` · `/proxy add ip:port` · `/proxy del ip:port` | owner only — inspect/edit the pool |
 | `/stats` `/users` `/ban` `/unban` `/broadcast` | owner only |
+| `/diag` | owner only — host, uptime, commit, RAM, battery, autostart |
+| `/restart` | owner only — restart the bot in place, no terminal needed |
+| `/update` | owner only — `git pull` then restart |
+| `/logs [n]` | owner only — last N log lines |
 | `/id` | your ID + chat ID |
 
 Every result carries buttons that depend on what happened:
@@ -153,6 +157,16 @@ Control script:
 ```bash
 ./botctl.sh start|stop|restart|status|log
 ```
+
+### On a phone, one command
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Iotatg/nickbypass/main/nickbot/deploy/termux-install.sh)
+```
+
+Asks for the token and your ID once, then installs, configures, starts and
+registers a boot hook. After that the terminal stays closed: `/diag`, `/restart`,
+`/update` and `/logs` in the chat do the rest.
 
 ## Config
 
@@ -273,6 +287,7 @@ tests/
   test_farm.py     proxy parsing (RFC1918 rejected), pool ranking, persistence
   test_offline.py  formatting, URL parsing, rate limit, DB, handler wiring
   test_registry.py 2,400+ domains: no dupes, lookup rules, terminal logic, speed
+  test_remote.py   log tail/rotate, diagnostics, execv restart, owner gate
 ```
 
 ## Tests
@@ -284,9 +299,10 @@ python3 tests/test_offline.py    # 61 checks — extraction, routing, rate limit
 python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer bounce
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 python3 tests/test_registry.py   # 52 checks — 2,400+ domains, lookup, terminal logic, speed
+python3 tests/test_remote.py     # 31 checks — /diag /restart /update /logs plumbing
 ```
 
-186 checks, no network needed.
+217 checks, no network needed.
 
 `test_gate.py` is the one that matters for the bug people hit: a local server
 imitates a GT gate that refuses `/links/go` without the CSRF pair, answers `#`

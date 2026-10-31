@@ -302,6 +302,10 @@ def help_text(is_owner: bool = False) -> str:
     if is_owner:
         base += (
             "\n\n<b>Admin</b>\n"
+            "· <code>/diag</code> — machine, uptime, commit, RAM, battery\n"
+            "· <code>/restart</code> — restart the bot in place\n"
+            "· <code>/update</code> — git pull, then restart\n"
+            "· <code>/logs 40</code> — last log lines\n"
             "· <code>/stats</code> — traffic and success rate\n"
             "· <code>/users</code> — user count\n"
             "· <code>/broadcast &lt;text&gt;</code> — message everyone\n"
@@ -405,6 +409,34 @@ def status_card(
     if farm:
         lines.append(f"🌾 {farm}")
     return "\n".join(lines)
+
+
+def diag_card(rows: List[tuple], host: str, autostart: Any = None) -> str:
+    """One screen with everything you would otherwise open a terminal for."""
+    width = max((len(k) for k, _ in rows), default=0)
+    body = "\n".join(f"<code>{h(k.ljust(width))}</code>  {h(v)}" for k, v in rows)
+    if autostart is True:
+        boot = "🟢 on — survives a reboot"
+    elif autostart is False:
+        boot = "🔴 off — run <code>bash deploy/termux-boot.sh</code>"
+    else:
+        boot = "– not applicable here"
+    return (
+        "<b>Machine</b>\n\n"
+        f"{body}\n"
+        f"<code>{h('Run as'.ljust(width))}</code>  {h(host)}\n"
+        f"<code>{h('Autostart'.ljust(width))}</code>  {boot}"
+    )
+
+
+def logs_card(lines: str, count: int) -> str:
+    if not lines:
+        return (
+            "<b>Log</b>\n\nNo <code>data/bot.log</code> yet — that file only "
+            "exists when the bot runs in the background "
+            "(<code>bash deploy/termux-run.sh</code>)."
+        )
+    return f"<b>Last {count} log lines</b>\n\n<pre>{h(lines)}</pre>"
 
 
 def stats_card(st: Dict[str, Any], top: List[tuple]) -> str:
