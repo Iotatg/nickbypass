@@ -1,31 +1,8 @@
-"""Is this URL a destination, or just another waypoint?
+"""Does this URL *look* like a waypoint, and is there really another hop?
 
-Kept in step with ``nickbot/hops.py``: this package is installed on its own on
-a phone, so it cannot import from the bot. The bot's test suite compares both
+Kept in step with ``nickbot/hops.py``: this package is installed on its own on a
+phone, so it cannot import from the bot. The bot's test suite compares both
 copies over the same URL table, so they cannot drift apart.
-
-The old rule was "the URL changed, so we are done". That is exactly how a
-generated auth endpoint — ``auth.something.workers.dev/generate?code=...`` —
-ended up in the chat as a "Bypassed Link" while the real page was still two
-redirects away.
-
-A single word in a path proves nothing: ``/blog/how-to-generate-links`` is a
-perfectly normal article, and ``/auth/login`` is a page, not a gate. So this
-module scores several independent signals and only calls a URL *intermediate*
-when they add up:
-
-* the host is a known shortener / gate (the registry knows 2,400+ of them),
-* a subdomain or hosting suffix that generated endpoints live on,
-* a gate-shaped path segment (``/generate``, ``/auth/``, ``/verify`` …),
-* a query that carries a target URL or an opaque credential (``code=``, ``token=``),
-* page evidence (countdown / "redirecting" / "get link"),
-* and it stays on the same host as the hop that produced it.
-
-Content pages pull the score back down: two or more wordy path segments, no
-gate segment, no credential, nothing on the page but prose.
-
-Nothing here knows about any particular domain: no hard-coded
-``pwasmultiverse``, no allow-list of "good" destinations.
 """
 
 from __future__ import annotations
@@ -35,10 +12,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl, urlsplit
 
-# A URL is intermediate at or above this score. 3 means "one strong signal, or
+# "Worth a second look" at or above this score. 3 means "one strong signal, or
 # two weak ones that point the same way" - a lone /generate or a lone ?code=
 # is not enough on its own.
 THRESHOLD = 3
+
+# What decide() can return.
+CONTINUE = "continue"
+FINAL = "final"
 
 GATE_SEGMENTS: Set[str] = {
     "generate", "generated", "generator",
@@ -105,15 +86,38 @@ _SHORT_CODE = re.compile(r"^(?=.*\d)[A-Za-z0-9]{4,16}$")
 
 @dataclass
 class Verdict:
-    """The classifier's answer, with the reasons that produced it."""
+    """How much a URL *resembles* a waypoint, with the reasons why.
 
-    intermediate: bool
+    ``suspicious`` is a hint for the resolver ("spend a browser on this page"),
+    not a judgement about the chain. Nothing should refuse a URL because of it.
+    """
+
+    suspicious: bool
     score: int
     reasons: List[str] = field(default_factory=list)
 
     @property
     def why(self) -> str:
         return ", ".join(self.reasons) or "no gate signals"
+
+
+@dataclass
+class Decision:
+    """What to do with the address a hop just reached.
+
+    ``action`` is ``CONTINUE`` (with ``url`` holding the next hop) or ``FINAL``
+    (with ``url`` holding the accepted destination). ``reason`` says which piece
+    of evidence produced it; ``hint`` keeps the pattern score for the log.
+    """
+
+    action: str
+    url: str
+    reason: str
+    hint: Verdict
+
+    @property
+    def continues(self) -> bool:
+        return self.action == CONTINUE
 
 
 def normalize(url: str) -> str:
@@ -168,7 +172,7 @@ def looks_blocked(*parts: str) -> str:
     return ""
 
 
-def is_intermediate(
+def looks_like_waypoint(
     url: str,
     *,
     prev_url: str = "",
@@ -176,11 +180,11 @@ def is_intermediate(
     text: str = "",
     known_gate: Optional[bool] = None,
 ) -> Verdict:
-    """Score ``url`` and decide whether the chain has to keep going.
+    """Score how much ``url`` resembles a gate / generated endpoint.
 
-    ``prev_url`` is the hop that produced this URL, ``title``/``text`` are page
-    evidence when we have it. ``known_gate`` lets a caller pass the registry's
-    answer instead of paying for the lookup twice.
+    Advisory only. ``prev_url`` is the hop that produced this URL, ``title`` and
+    ``text`` are page evidence when we have it. ``known_gate`` lets a caller pass
+    the registry's answer instead of paying for the lookup twice.
     """
     reasons: List[str] = []
     score = 0
@@ -197,7 +201,12 @@ def is_intermediate(
 
     # 1. Known shortener / gate host. Definitive on its own.
     if known_gate is None:
-        known_gate = False  # the caller passes the registry's answer
+        try:
+            from . import sites
+
+            known_gate = sites.is_gate(u)
+        except Exception:  # pragma: no cover - sites always present in the bot
+            known_gate = False
     if known_gate:
         score += 4
         reasons.append("known shortener/gate host")
@@ -270,6 +279,47 @@ def is_intermediate(
         reasons.append("several slug segments")
 
     return Verdict(score >= THRESHOLD, score, reasons)
+
+
+def decide(
+    url: str,
+    *,
+    next_url: str = "",
+    prev_url: str = "",
+    known_gate: Optional[bool] = None,
+) -> Decision:
+    """Final or not - decided by evidence, never by the URL's name.
+
+    ``next_url`` is an address the page actually handed over (a Location, a meta
+    refresh target, a button target the resolver could not follow). ``known_gate``
+    is the registry's answer: a host that exists to forward. Either one keeps the
+    chain alive. Without one, ``url`` is the destination - however suspicious it
+    looks, and whatever words its path happens to contain.
+    """
+    hint = looks_like_waypoint(url, prev_url=prev_url, known_gate=known_gate)
+
+    if next_url and not same_target(next_url, url):
+        return Decision(CONTINUE, next_url, "the page hands over another address", hint)
+
+    if known_gate is None:
+        try:
+            from . import sites
+
+            known_gate = sites.is_gate(url)
+        except Exception:  # pragma: no cover - sites always present in the bot
+            known_gate = False
+
+    if known_gate and not same_target(url, prev_url):
+        return Decision(CONTINUE, url, "the host is a shortener, so it must forward", hint)
+
+    if hint.suspicious:
+        return Decision(
+            FINAL, url,
+            "no further navigation found, so this is the destination "
+            f"(it only looks like a waypoint: {hint.why})",
+            hint,
+        )
+    return Decision(FINAL, url, "no further navigation on this page", hint)
 
 
 def same_target(a: str, b: str) -> bool:

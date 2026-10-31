@@ -172,14 +172,16 @@ class Engine:
     async def _resolve_inner(self, url: str, allow: bool) -> Dict[str, Any]:
         """Walk the chain until the destination is genuinely final.
 
-        Each hop is resolved the normal way (HTTP fast path, browser only when
-        the page needs it); the answer is then classified. An intermediate
-        answer - a generated auth endpoint, another shortener, a /go/ page -
-        becomes the input of the next hop instead of being reported as success.
+        The rule, and the whole point of this method: a hop is only continued
+        when there is *evidence* of another navigation - the page handed over an
+        address, or the chain stopped on a host that exists to forward. A URL is
+        never rejected because its path says "auth" or "generate"; a generated
+        auth endpoint with nothing behind it is a perfectly good destination.
 
-        When the HTTP path lands on a waypoint, the browser gets one shot at the
-        *same* page first: gates routinely offer a decoy link to an HTTP client
-        and the real exit to a real browser.
+        The pattern score in :mod:`nickbot.hops` buys exactly one thing: when an
+        answer looks like a waypoint, the browser gets one shot at the page that
+        produced it, because gates hand HTTP clients a decoy and browsers the
+        real exit. Whatever the browser finds after that is the answer.
         """
         t0 = time.perf_counter()
         budget = max(1, int(self.cfg.max_hops))
@@ -198,61 +200,69 @@ class Engine:
             method = data.get("method") or "http"
             log.info("[resolver] method=%s ok=%s next=%s", method, ok, final or "-")
 
-            verdict = (
-                hops.is_intermediate(final, prev_url=cur)
-                if final else hops.Verdict(False, 0, ["no destination"])
-            )
-
-            # HTTP said "done" but the URL is a waypoint: the gate may be
-            # serving the real exit only to a browser. Ask it before moving on.
-            if ok and verdict.intermediate and allow and method != "browser":
-                key0 = hops.normalize(cur)
-                if key0 not in browser_tried:
-                    browser_tried.add(key0)
-                    log.info("[resolver] %s looks intermediate (%s) - browser retry on the same page",
-                             final, verdict.why)
-                    b = await self._one_hop(cur, allow, force_browser=True)
-                    bfinal = (b.get("final") or "").strip()
-                    if b.get("ok") and bfinal and not hops.same_target(bfinal, final):
-                        b["input"] = url
-                        data = b
-                        final, method = bfinal, b.get("method") or "browser"
-                        verdict = hops.is_intermediate(final, prev_url=cur)
-                        log.info("[resolver] browser found %s (intermediate=%s)",
-                                 final, verdict.intermediate)
-
-            trail.append({
-                "hop": n, "url": cur, "next": final, "ok": ok, "method": method,
-                "intermediate": verdict.intermediate, "score": verdict.score,
-                "why": verdict.why,
-            })
-            data["hops"] = trail
-
             if not ok:
+                trail.append({"hop": n, "url": cur, "next": final, "ok": False,
+                              "method": method, "action": "stop", "score": 0, "why": ""})
+                data["hops"] = trail
                 data["status"] = "blocked" if data.get("blocked") else "unresolved"
                 log.info("[resolver] stop: %s", data["status"])
                 break
 
-            if not verdict.intermediate:
+            hint = hops.looks_like_waypoint(final, prev_url=cur)
+
+            # It merely *looks* like a waypoint. One browser pass on the page
+            # that produced it, then we accept whatever is there.
+            key0 = hops.normalize(cur)
+            if hint.suspicious and allow and method != "browser" and key0 not in browser_tried:
+                browser_tried.add(key0)
+                log.info("[resolver] %s looks like a waypoint (%s) - one browser check",
+                         final, hint.why)
+                b = await self._one_hop(cur, allow, force_browser=True)
+                bfinal = (b.get("final") or "").strip()
+                if b.get("ok") and bfinal and not hops.same_target(bfinal, final):
+                    log.info("[resolver] browser found %s", bfinal)
+                    b["input"] = url
+                    data = b
+                    final, method = bfinal, b.get("method") or "browser"
+                    hint = hops.looks_like_waypoint(final, prev_url=cur)
+                elif not b.get("ok") and b.get("blocked"):
+                    # The browser hit a human-verification wall; the HTTP answer
+                    # stands but must not be sold as verified success.
+                    data["note"] = ((data.get("note") + " · ") if data.get("note") else "") + \
+                        (b.get("note") or "Browser could not verify the destination")
+
+            decision = hops.decide(
+                final,
+                next_url=(data.get("next") or ""),
+                prev_url=cur,
+            )
+            trail.append({
+                "hop": n, "url": cur, "next": final, "ok": True, "method": method,
+                "action": decision.action, "score": hint.score, "why": hint.why,
+            })
+            data["hops"] = trail
+            log.info("[resolver] action=%s score=%d why=%s", decision.action, hint.score, hint.why)
+
+            if not decision.continues:
+                data["final"] = final
                 data["status"] = "ok"
+                if hint.suspicious:
+                    log.info("[resolver] looked like a waypoint but nothing follows: %s", final)
                 log.info("[resolver] FINAL=%s", final)
                 break
 
-            log.info("[resolver] intermediate=true score=%d why=%s", verdict.score, verdict.why)
-            key = hops.normalize(final)
-            if key in seen or hops.same_target(final, cur):
-                # The chain ends on a page that only exists to send you on.
-                # Reporting it as the destination is the bug this guards.
+            key = hops.normalize(decision.url)
+            if key in seen or hops.same_target(decision.url, cur):
                 data["ok"] = False
                 data["status"] = "loop"
                 data["final"] = final
                 data["hops"] = trail
                 data["input"] = url
-                data["note"] = f"Stopped on an intermediate page ({verdict.why}); no further hop available"
+                data["note"] = f"Stopped on a page that points back at itself ({decision.reason})"
                 log.info("[resolver] stop: loop at %s", final)
                 break
             seen.add(key)
-            cur = final
+            cur = decision.url
         else:
             data["ok"] = False
             data["status"] = "max_hops"

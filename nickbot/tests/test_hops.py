@@ -1,13 +1,17 @@
-"""Final-destination classification and the multi-hop loop (offline).
+"""Waypoint hints, the evidence-based decision, and the multi-hop loop (offline).
 
-The bug these tests lock down: the bot answered
+Two things are locked down here, and they pull in opposite directions:
 
-    https://auth.pwasmultiverse.workers.dev/generate?code=N8BCN7VQDAZFL48O
+1. ``auth.pwasmultiverse.workers.dev/generate?code=...`` **is the real
+   destination** of ``https://vplink.in/nAKfh``. It looks like a gate, it scores
+   like a gate, and rejecting it on sight made the bot walk past the answer the
+   user actually wanted. A URL's name is never evidence.
+2. A gate really does hide its exit from HTTP clients. When an answer merely
+   *looks* like a waypoint, one browser pass on the page that produced it is
+   worth the time - and if the browser finds nothing either, the answer stands.
 
-as the "Bypassed Link" while the real page was still further along. A generated
-auth endpoint is a waypoint, not a destination — but neither is every URL that
-happens to contain the word "auth", so the classifier is scored, not keyword
-matched.
+So: ``looks_like_waypoint`` is a hint, ``decide`` is the verdict, and only the
+latter is allowed to end or continue a chain.
 """
 
 from __future__ import annotations
@@ -37,51 +41,73 @@ def check(name, cond, extra=""):
         print(f"  ✗ {name}  {extra}")
 
 
-GATE = "https://auth.pwasmultiverse.workers.dev/generate?code=N8BCN7VQDAZFL48O"
+AUTH = "https://auth.pwasmultiverse.workers.dev/generate?code=N8BCN7VQDAZFL48O"
+SHORT = "https://gplinks.co/abc123"
 FINAL = ("https://targetssc.com/studyinsurances/"
          "best-short-term-health-insurance-in-usa-2026/")
 
 
-def verdict(url, **kw):
-    return hops.is_intermediate(url, **kw)
+def hint(url, **kw):
+    return hops.looks_like_waypoint(url, **kw)
+
+
+def decide(url, **kw):
+    return hops.decide(url, **kw)
 
 
 def main() -> int:
-    print("\n[1] waypoints are recognised")
-    check("generated auth endpoint", verdict(GATE).intermediate is True)
-    check("...and says why", "gate path" in verdict(GATE).why or "workers.dev" in verdict(GATE).why)
-    check("known shortener", verdict("https://gplinks.co/abc123").intermediate is True)
-    check("known gate", verdict("https://vplink.in/nAKfh").intermediate is True)
-    check("open redirector", verdict(
-        "https://example.com/redirect?url=https%3A%2F%2Fevil.example%2Fx").intermediate is True)
-    check("/go/ hop", verdict("https://example.net/go/9f8e7d").intermediate is True)
-    check("/verify with token", verdict(
-        "https://site.example/verify?token=AB12cd34EF56").intermediate is True)
-    check("continue page", verdict("https://site.example/continue/step2").intermediate is True)
+    print("\n[1] the hint still recognises waypoint-shaped URLs")
+    check("generated auth endpoint scores high", hint(AUTH).suspicious is True)
+    check("...and says why", "gate path" in hint(AUTH).why or "workers.dev" in hint(AUTH).why)
+    check("known shortener", hint("https://gplinks.co/abc123").suspicious is True)
+    check("known gate", hint("https://vplink.in/nAKfh").suspicious is True)
+    check("open redirector", hint(
+        "https://example.com/redirect?url=https%3A%2F%2Fevil.example%2Fx").suspicious is True)
+    check("/go/ hop", hint("https://example.net/go/9f8e7d").suspicious is True)
+    check("/verify with token", hint(
+        "https://site.example/verify?token=AB12cd34EF56").suspicious is True)
+    check("continue page", hint("https://site.example/continue/step2").suspicious is True)
     check("same host as previous hop tips a weak signal over",
-          verdict("https://site.example/generate", prev_url="https://site.example/x").intermediate is True)
-    check("page text can decide it", verdict(
-        "https://site.example/p", text="Please wait... redirecting you in 5 seconds").intermediate is True)
+          hint("https://site.example/generate", prev_url="https://site.example/x").suspicious is True)
+    check("page text can tip it", hint(
+        "https://site.example/p", text="Please wait... redirecting you in 5 seconds").suspicious is True)
 
-    print("\n[2] real destinations are left alone")
-    check("the real target", verdict(FINAL).intermediate is False)
-    check("article slug", verdict("https://example.org/blog/post-1").intermediate is False)
-    check("article about generating links", verdict(
-        "https://news.site/article/how-to-generate-more-links").intermediate is False)
-    check("auth in a slug", verdict(
-        "https://medium.com/@nick/why-i-love-auth-systems-1234abcd").intermediate is False)
-    check("shop coupon code", verdict(
-        "https://shop.example.com/product?code=SUMMER20").intermediate is False)
-    check("verify-email page", verdict("https://example.com/verify-email").intermediate is False)
-    check("deep path on a shortener host", verdict(
-        "https://shrtfly.com/blog/some-post").intermediate is False)
-    check("plain page", verdict("https://example.com/about").intermediate is False)
-    check("content page with utm tags", verdict(
-        "https://site.example/blog/how-to-do-x?utm_source=tg").intermediate is False)
-    check("article title down-weights", verdict(
-        "https://site.example/generate", title="How to generate a strong password safely").intermediate is False)
+    print("\n[2] the hint leaves real destinations alone")
+    check("the real target", hint(FINAL).suspicious is False)
+    check("article slug", hint("https://example.org/blog/post-1").suspicious is False)
+    check("article about generating links", hint(
+        "https://news.site/article/how-to-generate-more-links").suspicious is False)
+    check("auth in a slug", hint(
+        "https://medium.com/@nick/why-i-love-auth-systems-1234abcd").suspicious is False)
+    check("shop coupon code", hint(
+        "https://shop.example.com/product?code=SUMMER20").suspicious is False)
+    check("verify-email page", hint("https://example.com/verify-email").suspicious is False)
+    check("deep path on a shortener host", hint(
+        "https://shrtfly.com/blog/some-post").suspicious is False)
+    check("plain page", hint("https://example.com/about").suspicious is False)
+    check("content page with utm tags", hint(
+        "https://site.example/blog/how-to-do-x?utm_source=tg").suspicious is False)
+    check("article title down-weights", hint(
+        "https://site.example/generate", title="How to generate a strong password safely").suspicious is False)
 
-    print("\n[3] hop loop: intermediate -> final")
+    print("\n[3] decide(): the hint alone never ends a chain")
+    check("suspicious URL with nothing behind it is FINAL", decide(AUTH).action == hops.FINAL)
+    check("...and keeps the URL", decide(AUTH).url == AUTH)
+    check("...and says why it is not rejected", "looks like a waypoint" in decide(AUTH).reason)
+    check("high score does not mean reject", hint(AUTH).score >= 5)
+    check("a handed-over address continues the chain",
+          decide(AUTH, next_url=FINAL).action == hops.CONTINUE)
+    check("...and becomes the next hop", decide(AUTH, next_url=FINAL).url == FINAL)
+    check("the same address is not a next hop",
+          decide(AUTH, next_url=AUTH + "#x").action == hops.FINAL)
+    check("a shortener host continues (it exists to forward)",
+          decide(SHORT, prev_url="https://vplink.in/x", known_gate=True).action == hops.CONTINUE)
+    check("...but not when it is already the page we are on",
+          decide(SHORT, prev_url=SHORT, known_gate=True).action == hops.FINAL)
+    check("a normal destination is final", decide(FINAL, known_gate=False).action == hops.FINAL)
+    check("plain page is final", decide("https://example.com/about", known_gate=False).action == hops.FINAL)
+
+    print("\n[4] hop loop: shortener -> shortener -> final")
     cfg = Config.load()
     cfg.allow_browser = True
     cfg.max_hops = 10
@@ -90,10 +116,10 @@ def main() -> int:
     calls = []
 
     async def fake_hop(url, allow, force_browser=False):
-        calls.append(url)
+        calls.append((url, force_browser))
         if url.startswith("https://vplink.in/"):
-            return {"final": GATE, "ok": True, "method": "browser", "steps": [], "note": ""}
-        if url == GATE:
+            return {"final": SHORT, "ok": True, "method": "http", "steps": [], "note": ""}
+        if url == SHORT:
             return {"final": FINAL, "ok": True, "method": "http", "steps": [], "note": ""}
         return {"final": url, "ok": False, "method": "http", "steps": [], "note": "?"}
 
@@ -103,18 +129,31 @@ def main() -> int:
     check("marked ok", out["ok"] is True)
     check("status ok", out.get("status") == "ok")
     check("two hops recorded", len(out["hops"]) == 2, out.get("hops"))
-    check("first hop flagged intermediate", out["hops"][0]["intermediate"] is True)
-    check("second hop not flagged", out["hops"][1]["intermediate"] is False)
-    check("both URLs were actually resolved", calls[:2] == ["https://vplink.in/nAKfh", GATE])
+    check("first hop continued", out["hops"][0]["action"] == "continue")
+    check("second hop was final", out["hops"][1]["action"] == "final")
+    chain = [u for u, forced in calls if not forced]
+    check("both URLs were actually resolved", chain[:2] == ["https://vplink.in/nAKfh", SHORT], chain)
 
-    print("\n[3b] HTTP decoy, browser gets the real exit")
+    print("\n[5] the user's case: the auth endpoint IS the destination")
+    async def vplink_only(url, allow, force_browser=False):
+        return {"final": AUTH, "ok": True, "method": "gate", "steps": [], "note": ""}
+
+    e._one_hop = vplink_only
+    out = asyncio.run(e._resolve_inner("https://vplink.in/nAKfh", True))
+    check("auth endpoint returned as final", out["final"] == AUTH, out["final"])
+    check("reported ok, not unresolved", out["ok"] is True)
+    check("status ok", out.get("status") == "ok")
+    check("single hop", len(out["hops"]) == 1, out.get("hops"))
+    check("not marked as a loop", out.get("status") != "loop")
+
+    print("\n[6] HTTP decoy, browser gets the real exit")
     seen_calls = []
 
     async def decoy(url, allow, force_browser=False):
         seen_calls.append((url, force_browser))
         if force_browser:
             return {"final": FINAL, "ok": True, "method": "browser", "steps": [], "note": ""}
-        return {"final": GATE, "ok": True, "method": "http", "steps": [], "note": ""}
+        return {"final": AUTH, "ok": True, "method": "http", "steps": [], "note": ""}
 
     e._one_hop = decoy
     out = asyncio.run(e._resolve_inner("https://vplink.in/nAKfh", True))
@@ -123,27 +162,18 @@ def main() -> int:
     check("one hop, not two", len(out["hops"]) == 1, len(out["hops"]))
     check("browser was retried on the gate page",
           any(u == "https://vplink.in/nAKfh" and f for u, f in seen_calls))
+    check("browser ran exactly once", len([1 for _, f in seen_calls if f]) == 1)
 
-    print("\n[4] a dead end is not reported as success")
-    async def stuck(url, allow, force_browser=False):
-        return {"final": GATE, "ok": True, "method": "http", "steps": [], "note": ""}
-
-    e._one_hop = stuck
-    out = asyncio.run(e._resolve_inner("https://vplink.in/nAKfh", True))
-    check("intermediate is never the answer", out["final"] == GATE)
-    check("...but it is not ok", out["ok"] is False)
-    check("status loop", out.get("status") == "loop", out.get("status"))
-    check("note explains it", "intermediate" in out["note"].lower())
-
-    print("\n[5] loop detection and hop budget")
+    print("\n[7] loop detection and hop budget")
     async def pingpong(url, allow, force_browser=False):
-        nxt = GATE if url != GATE else "https://vplink.in/nAKfh"
+        nxt = SHORT if url != SHORT else "https://vplink.in/nAKfh"
         return {"final": nxt, "ok": True, "method": "http", "steps": [], "note": ""}
 
     e._one_hop = pingpong
     out = asyncio.run(e._resolve_inner("https://vplink.in/nAKfh", True))
     check("bouncing chain stops", out["ok"] is False)
     check("stops quickly", len(out["hops"]) <= 3, len(out["hops"]))
+    check("says loop", out.get("status") == "loop", out.get("status"))
 
     cfg2 = Config.load()
     cfg2.allow_browser = False
@@ -153,8 +183,8 @@ def main() -> int:
 
     async def endless(url, allow, force_browser=False):
         counter["n"] += 1
-        return {"final": f"https://auth{counter['n']}.workers.dev/generate?code=AB12CD34EF",
-                "ok": True, "method": "http", "steps": [], "note": ""}
+        return {"final": f"https://gplinks.co/c{counter['n']}", "ok": True,
+                "method": "http", "steps": [], "note": ""}
 
     e2._one_hop = endless
     out = asyncio.run(e2._resolve_inner("https://vplink.in/nAKfh", False))
@@ -162,7 +192,7 @@ def main() -> int:
     check("status max_hops", out.get("status") == "max_hops", out.get("status"))
     check("not ok", out["ok"] is False)
 
-    print("\n[6] blocked stays blocked")
+    print("\n[8] blocked stays blocked")
     async def wall(url, allow, force_browser=False):
         return {"final": url, "ok": False, "method": "http", "blocked": "vpn",
                 "steps": [], "note": "VPN detected"}
@@ -172,7 +202,7 @@ def main() -> int:
     check("blocked status", out.get("status") == "blocked", out.get("status"))
     check("no false destination", out["ok"] is False)
 
-    print("\n[7] structured hop logging")
+    print("\n[9] structured hop logging")
     records = []
 
     class Grab(logging.Handler):
@@ -189,15 +219,16 @@ def main() -> int:
     joined = "\n".join(records)
     check("logs hop numbers", "[resolver] hop=1" in joined and "[resolver] hop=2" in joined)
     check("logs the method", "[resolver] method=" in joined)
-    check("logs intermediate=true", "intermediate=true" in joined)
+    check("logs the decision", "action=" in joined)
+    check("logs why", "why=" in joined)
     check("logs the final URL", f"[resolver] FINAL={FINAL}" in joined)
 
-    print("\n[8] helpers")
+    print("\n[10] helpers")
     check("normalize adds a scheme", hops.normalize("vplink.in/x") == "https://vplink.in/x")
     check("normalize keeps the path", hops.normalize("HTTP://Vplink.in/nAKfh").endswith("/nAKfh"))
-    check("host_of", hops.host_of(GATE) == "auth.pwasmultiverse.workers.dev")
+    check("host_of", hops.host_of(AUTH) == "auth.pwasmultiverse.workers.dev")
     check("same_target ignores fragment", hops.same_target(FINAL + "#x", FINAL) is True)
-    check("same_target catches a different page", hops.same_target(FINAL, GATE) is False)
+    check("same_target catches a different page", hops.same_target(FINAL, AUTH) is False)
     check("blocked text detected", "Human verification" in hops.looks_blocked("<div class=g-recaptcha>"))
     check("clean page not blocked", hops.looks_blocked("<p>hello</p>") == "")
 

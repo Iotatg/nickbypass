@@ -1,9 +1,14 @@
-"""linkresolver: multi-hop chain and classifier parity (offline).
+"""linkresolver: evidence-based hops and classifier parity (offline).
 
     python3 tests/test_multihop.py
 
 No browser is started: ``Resolver._resolve_once`` is stubbed so the hop logic
 can be tested deterministically on a machine without Chromium.
+
+The chain in the first section is the one that started all of this:
+``https://vplink.in/nAKfh`` really does end on
+``https://auth.pwasmultiverse.workers.dev/generate?code=...``. It looks like a
+gate and it is the destination, so nothing here may reject it on shape alone.
 """
 
 from __future__ import annotations
@@ -33,7 +38,8 @@ def check(name, cond, extra=""):
         print(f"  ✗ {name}  {extra}")
 
 
-GATE = "https://auth.pwasmultiverse.workers.dev/generate?code=N8BCN7VQDAZFL48O"
+AUTH = "https://auth.pwasmultiverse.workers.dev/generate?code=N8BCN7VQDAZFL48O"
+SHORT = "https://gplinks.co/abc123"
 FINAL = ("https://targetssc.com/studyinsurances/"
          "best-short-term-health-insurance-in-usa-2026/")
 
@@ -48,49 +54,98 @@ def result(url, final, ok_=True, method="http"):
 
 
 def main() -> int:
-    print("\n[1] a chain that ends on a generated auth endpoint keeps going")
+    print("\n[1] the auth endpoint is the destination, not a waypoint")
     r = Resolver(allow_browser=False, max_hops=10)
     calls = []
 
     def once(url, force_browser=None):
         calls.append(url)
-        if url.startswith("https://vplink.in/"):
-            return result(url, GATE, method="browser")
-        if url == GATE:
-            return result(url, FINAL)
-        return result(url, url, ok_=False)
+        return result(url, AUTH, method="gate")
 
     r._resolve_once = once
     out = r.resolve("https://vplink.in/nAKfh")
+    check("auth endpoint is returned", out.final_url == AUTH, out.final_url)
+    check("reported ok", out.ok is True)
+    check("resolved once", calls == ["https://vplink.in/nAKfh"], calls)
+    check("not called a loop", "loop" not in out.note.lower(), out.note)
+
+    print("\n[2] a real chain keeps going")
+    calls = []
+
+    def chain(url, force_browser=None):
+        calls.append(url)
+        if url.startswith("https://vplink.in/"):
+            return result(url, SHORT)
+        if url == SHORT:
+            return result(url, FINAL)
+        return result(url, url, ok_=False)
+
+    r = Resolver(allow_browser=False, max_hops=10)
+    r._resolve_once = chain
+    out = r.resolve("https://vplink.in/nAKfh")
     check("final is the real page", out.final_url == FINAL, out.final_url)
     check("reported ok", out.ok is True)
-    check("the intermediate URL was re-resolved", calls == ["https://vplink.in/nAKfh", GATE], calls)
-    check("steps explain the hop", any("intermediate" in s.detail for s in out.steps))
+    check("the shortener was re-resolved", calls == ["https://vplink.in/nAKfh", SHORT], calls)
+    check("steps say continue then final",
+          [s.extra.get("action") for s in out.steps if s.extra.get("action")] == ["continue", "final"],
+          [s.extra.get("action") for s in out.steps])
 
-    print("\n[2] a dead end is not sold as success")
+    print("\n[3] a suspicious answer with nothing behind it stays final")
     def stuck(url, force_browser=None):
-        return result(url, GATE)
+        return result(url, AUTH)
 
+    r = Resolver(allow_browser=False)
     r._resolve_once = stuck
     out = r.resolve("https://vplink.in/nAKfh")
-    check("still points at the waypoint", out.final_url == GATE)
-    check("but is not ok", out.ok is False)
-    check("says it is a loop", "Loop" in out.note or "loop" in out.note, out.note)
+    check("still points at the auth endpoint", out.final_url == AUTH)
+    check("and is ok", out.ok is True)
+    check("one pass only", out.note != "Maximum redirect hops reached (10)")
 
-    print("\n[3] hop budget")
+    print("\n[4] HTTP decoy, browser gets the real exit")
+    seen = []
+
+    def decoy(url, force_browser=None):
+        seen.append((url, force_browser))
+        if force_browser:
+            return result(url, FINAL, method="browser")
+        return result(url, AUTH)
+
+    r = Resolver(allow_browser=True, max_hops=10)
+    r._resolve_once = decoy
+    out = r.resolve("https://vplink.in/nAKfh")
+    check("browser answer wins", out.final_url == FINAL, out.final_url)
+    check("browser ran on the page that produced it",
+          any(u == "https://vplink.in/nAKfh" and f for u, f in seen), seen)
+    check("only one forced pass", len([1 for _, f in seen if f]) == 1)
+
+    print("\n[5] loop detection and hop budget")
+    # Both hosts are in the CLI's own shortener table, so each hop really is
+    # evidence of another hop - which is what makes this a loop test and not a
+    # "suspicious URL" test.
+    def pingpong(url, force_browser=None):
+        return result(url, "https://bit.ly/xyz789" if url != "https://bit.ly/xyz789" else SHORT)
+
+    r = Resolver(allow_browser=False, max_hops=10)
+    r._resolve_once = pingpong
+    out = r.resolve("https://vplink.in/nAKfh")
+    check("bouncing chain stops", out.ok is False)
+    check("says it is a loop", "loop" in out.note.lower(), out.note)
+
     counter = {"n": 0}
+
     def endless(url, force_browser=None):
         counter["n"] += 1
-        return result(url, f"https://auth{counter['n']}.workers.dev/generate?code=AB12CD34EF")
+        return result(url, f"https://gplinks.co/c{counter['n']}")
 
     r = Resolver(allow_browser=False, max_hops=4)
     r._resolve_once = endless
     out = r.resolve("https://vplink.in/nAKfh")
-    check("stops at the budget", counter["n"] == 4, counter["n"])
+    # one initial pass + one pass per hop (the last hop has nothing to follow)
+    check("stops at the budget", counter["n"] == 5, counter["n"])
     check("says so", "Maximum redirect hops" in out.note, out.note)
     check("not ok", out.ok is False)
 
-    print("\n[4] normal destination passes straight through")
+    print("\n[6] normal destination passes straight through")
     def clean(url, force_browser=None):
         return result(url, FINAL)
 
@@ -100,7 +155,7 @@ def main() -> int:
     check("one hop only", out.final_url == FINAL and out.ok is True)
     check("no loop note", "Loop" not in out.note)
 
-    print("\n[5] classifier parity with the bot's copy")
+    print("\n[7] classifier parity with the bot's copy")
     try:
         from nickbot import hops as bot_hops
     except Exception as exc:  # pragma: no cover
@@ -108,22 +163,26 @@ def main() -> int:
         bot_hops = None
     if bot_hops is not None:
         table = [
-            GATE, FINAL, "https://gplinks.co/abc123", "https://vplink.in/nAKfh",
+            AUTH, FINAL, "https://gplinks.co/abc123", "https://vplink.in/nAKfh",
             "https://example.org/blog/post-1", "https://example.com/redirect?url=https%3A%2F%2Fx.example",
             "https://example.net/go/9f8e7d", "https://shop.example.com/product?code=SUMMER20",
             "https://example.com/verify-email", "https://news.site/article/how-to-generate-more-links",
             "https://site.example/continue/step2", "https://medium.com/@nick/why-i-love-auth-systems-1",
         ]
         same = all(
-            classify.is_intermediate(u, prev_url="https://vplink.in/nAKfh", known_gate=False).intermediate
-            == bot_hops.is_intermediate(u, prev_url="https://vplink.in/nAKfh", known_gate=False).intermediate
+            classify.looks_like_waypoint(u, prev_url="https://vplink.in/nAKfh", known_gate=False).suspicious
+            == bot_hops.looks_like_waypoint(u, prev_url="https://vplink.in/nAKfh", known_gate=False).suspicious
             for u in table
         )
         check("both copies agree on 12 URLs", same)
-        check("both flag the auth endpoint",
-              classify.is_intermediate(GATE).intermediate is True)
+        check("both still hint that the auth endpoint looks like a gate",
+              classify.looks_like_waypoint(AUTH).suspicious is True)
+        check("...and both call it final when nothing follows",
+              classify.decide(AUTH, known_gate=False).action == classify.FINAL)
+        check("both continue on a handed-over address",
+              classify.decide(AUTH, next_url=FINAL, known_gate=False).action == classify.CONTINUE)
 
-    print("\n[6] normalize is shared")
+    print("\n[8] normalize is shared")
     check("scheme added", normalize("vplink.in/x") == "https://vplink.in/x")
     check("classify.normalize matches", classify.normalize("vplink.in/x") == normalize("vplink.in/x"))
 

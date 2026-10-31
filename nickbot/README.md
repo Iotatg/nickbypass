@@ -57,32 +57,38 @@ too, if you have one.
 
 ### Is that URL the destination, or just another hop?
 
-A 200 response, or a URL that merely differs from the one you pasted, is not a
-destination. `auth.something.workers.dev/generate?code=…` is a generated auth
-page, and calling it a "Bypassed Link" is the bug this handles.
+A URL is the destination when the resolver actually reached it and there is
+nothing left to follow — not because it looks safe, and not because it looks
+suspicious.
 
-Every hop's answer is scored on independent signals — known gate host,
-`auth`/`go` subdomain, serverless hosting, gate-shaped path, a `code=`/`token=`
-credential, an embedded target URL, page copy like "redirecting", and whether it
-stays on the same host as the hop that produced it. Content pages (two or more
-slug segments, no gate words, no credential) pull the score back down, so
-`/blog/how-to-generate-links` is never mistaken for a gate.
+`https://auth.pwasmultiverse.workers.dev/generate?code=…` is the real answer for
+`https://vplink.in/nAKfh`. It has `auth` in the host, `workers.dev` hosting,
+`/generate` in the path and a `code=` in the query — every signal of a gate —
+and it is still where the chain ends. Rejecting it on sight walked straight past
+the answer.
 
-If the score says "waypoint", the URL becomes the input of the next hop — up to
-`MAX_HOPS` (default 12), with a visited set so a ping-pong chain can't spin. If
-the HTTP path lands on a waypoint, the browser gets one shot at the same page
-first, because gates often hand a decoy link to an HTTP client and the real exit
-to a browser. A chain that ends on a page which only exists to send you on is
-reported as unresolved, never as success.
+So shape is only a hint, and evidence decides:
 
-The log shows the whole walk:
+| Evidence | Result |
+|---|---|
+| the page hands over another address (Location, meta refresh, button target) | next hop |
+| the chain stops on a host the registry knows is a shortener | next hop — those exist to forward |
+| nothing to follow | **final**, however suspicious it looks |
+
+When an answer merely *looks* like a waypoint, the browser gets one pass at the
+page that produced it, because gates often hand an HTTP client a decoy and a
+browser the real exit. Whatever is there after that is the answer — a browser
+that also finds nothing means the URL is final.
+
+`MAX_HOPS` (default 12) and a visited set keep a ping-pong chain bounded, and a
+chain that genuinely can't be finished is reported unresolved rather than dressed
+up as success. The log shows the walk:
 
 ```
 [resolver] hop=1 url=https://vplink.in/nAKfh
-[resolver] method=browser ok=True next=https://auth....workers.dev/generate?code=...
-[resolver] intermediate=true score=5 why=subdomain 'auth', generated hosting (workers.dev), ...
-[resolver] hop=2 url=https://auth....workers.dev/generate?code=...
-[resolver] FINAL=https://targetssc.com/studyinsurances/...
+[resolver] method=gate ok=True next=https://auth....workers.dev/generate?code=...
+[resolver] action=final score=6 why=subdomain 'auth', generated hosting (workers.dev), ...
+[resolver] FINAL=https://auth....workers.dev/generate?code=...
 ```
 
 ## Commands
@@ -318,7 +324,7 @@ tests/
   test_offline.py  formatting, URL parsing, rate limit, DB, handler wiring
   test_registry.py 2,400+ domains: no dupes, lookup rules, terminal logic, speed
   test_remote.py   log tail/rotate, diagnostics, execv restart, owner gate
-  test_hops.py     final-destination scoring + the multi-hop loop
+  test_hops.py     waypoint hints, evidence-based decisions, the hop loop
 ```
 
 ## Tests
@@ -331,11 +337,11 @@ python3 tests/test_chain.py      # 10 checks — 3-hop gate chain, ad-layer boun
 python3 tests/test_farm.py       # 25 checks — proxy parsing, pool ranking, persistence
 python3 tests/test_registry.py   # 52 checks — 2,400+ domains, lookup, terminal logic, speed
 python3 tests/test_remote.py     # 31 checks — /diag /restart /update /logs plumbing
-python3 tests/test_hops.py       # 53 checks — waypoint scoring, multi-hop, loop/hop budget
+python3 tests/test_hops.py       # 68 checks — hints, decide(), hop loop, loop/hop budget
 ```
 
-270 checks, no network needed. The resolver engine has its own suite:
-`python3 ../linkresolver/tests/test_multihop.py` (16 checks, includes a parity
+285 checks, no network needed. The resolver engine has its own suite:
+`python3 ../linkresolver/tests/test_multihop.py` (27 checks, includes a parity
 test so the bot's classifier and the CLI's copy cannot drift).
 
 `test_gate.py` is the one that matters for the bug people hit: a local server
