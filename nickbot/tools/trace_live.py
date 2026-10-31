@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Watch a gate link in a real browser and print every navigation it makes.
 
+The phone and the repo disagree about what this file is: the repo carries a
+Playwright engine, the phone runs a Selenium one that is not in git. So the
+first thing this tool does is report which implementation is actually loaded
+(path + sha256 + engine), then trace *that* one - it never converts, installs
+or replaces anything.
+
 Why this exists: the bot reported an ad page (``pipefitter.in/...``) for a
 VPLink, and the only trail line in the log was that same ad page - no auth
 URL anywhere. A local replica *did* show the auth URL in the trail, so live
@@ -354,7 +360,7 @@ class Trace:
 
 # ---------------------------------------------------------------- bot itself
 
-def bot_path(url: str, timeout: float) -> None:
+def bot_path(url: str, timeout: float) -> Any:
     """Run the bot's own chain, printing the URL each stage is handed.
 
     The browser trail in the live log held the ad page and nothing else - not
@@ -371,7 +377,7 @@ def bot_path(url: str, timeout: float) -> None:
         from linkresolver import browser as B
     except Exception as exc:
         out(f"[bot] unavailable: {type(exc).__name__}: {exc}")
-        return
+        return [], [], ""
 
     cfg = Config.load()
     cfg.allow_browser = True
@@ -383,6 +389,7 @@ def bot_path(url: str, timeout: float) -> None:
     orig_http = FastResolver.resolve
     orig_br = B.BrowserResolver.resolve
     browser_inputs: List[str] = []
+    seen: Dict[str, Any] = {"steps": [], "final": ""}
 
     async def http(self: Any, u: str) -> Dict[str, Any]:
         d = await orig_http(self, u)
@@ -395,6 +402,8 @@ def bot_path(url: str, timeout: float) -> None:
         browser_inputs.append(u)
         out(f"[bot] BROWSER INPUT = {u}")
         final, steps, note = orig_br(self, u)
+        seen["final"] = final or ""
+        seen["steps"] = [getattr(s, "url", "") for s in steps]
         out(f"[bot] BROWSER OUTPUT = {final or '-'}   ({note})")
         for s in steps:
             out(f"[bot]        {getattr(s, 'kind', '?'):<9} {getattr(s, 'url', '')}")
@@ -408,7 +417,7 @@ def bot_path(url: str, timeout: float) -> None:
         data = asyncio.run(e.resolve(url, fresh=True))
     except Exception as exc:
         out(f"[bot] failed: {type(exc).__name__}: {exc}")
-        return
+        return browser_inputs, seen["steps"], seen["final"]
     finally:
         FastResolver.resolve = orig_http     # type: ignore[assignment]
         B.BrowserResolver.resolve = orig_br  # type: ignore[assignment]
@@ -424,6 +433,7 @@ def bot_path(url: str, timeout: float) -> None:
         out("[bot] browser never ran on this chain - the HTTP path answered alone")
     else:
         out(f"[bot] browser was handed: {browser_inputs}")
+    return browser_inputs, seen["steps"], seen["final"]
 
 
 # ------------------------------------------------------------------- analysis
@@ -545,6 +555,254 @@ def verdict(tr: Trace, baseline_final: str, baseline_steps: List[str]) -> str:
     return case
 
 
+# ------------------------------------------------------------ selenium engine
+
+class SeleniumHooks:
+    """Wrap Selenium so every navigation point prints the real URL.
+
+    Nothing here changes what the page does: ``get`` still navigates, ``click``
+    still clicks, ``quit`` still quits. The wrappers only read and print.
+    """
+
+    def __init__(self) -> None:
+        self.t0 = time.time()
+        self.events: List[Dict[str, Any]] = []
+        self.drivers: List[Any] = []
+        self._last = ""
+        self._installed = False
+
+    def rec(self, ch: str, url: str = "", **extra: Any) -> None:
+        ms = int((time.time() - self.t0) * 1000)
+        if ch == "current_url" and url == self._last:
+            return
+        if ch == "current_url":
+            self._last = url
+        self.events.append({"t": ms, "ch": ch, "url": url, **extra})
+        tail = "".join(f"  [{k}={v}]" for k, v in extra.items() if v not in ("", None))
+        out(f"[browser] {ch} = {url}" + tail)
+
+    # -- hooks -----------------------------------------------------------
+    def install(self) -> None:
+        if self._installed:
+            return
+        self._installed = True
+        try:
+            from selenium.webdriver.chrome.webdriver import WebDriver as Chrome
+            from selenium.webdriver.remote.webdriver import WebDriver
+            from selenium.webdriver.remote.webelement import WebElement
+        except Exception as exc:
+            out(f"[browser] selenium import failed: {type(exc).__name__}: {exc}")
+            return
+
+        raw_prop = WebDriver.current_url
+        raw_get_url = raw_prop.fget
+
+        def cur(self: Any) -> str:
+            v = raw_get_url(self)
+            self_hooks.rec("current_url", v)
+            return v
+
+        WebDriver.current_url = property(cur)
+
+        orig_get = WebDriver.get
+
+        def get(self: Any, target: str) -> None:
+            self_hooks.rec("driver.get INPUT", target)
+            orig_get(self, target)
+            try:
+                self_hooks.rec("current_url AFTER get", raw_get_url(self))
+            except Exception:
+                pass
+
+        WebDriver.get = get            # type: ignore[assignment]
+
+        orig_click = WebElement.click
+
+        def click(self: Any) -> Any:
+            text = ""
+            try:
+                text = (self.text or "").strip().replace("\n", " ")[:40]
+            except Exception:
+                pass
+            where = ""
+            try:
+                where = raw_get_url(self._parent)
+            except Exception:
+                pass
+            self_hooks.rec("click", where, label=text)
+            return orig_click(self)
+
+        WebElement.click = click      # type: ignore[assignment]
+
+        orig_init = Chrome.__init__
+
+        def init(self: Any, *a: Any, **kw: Any) -> None:
+            opts = kw.get("options")
+            if opts is None:
+                for v in a:
+                    if hasattr(v, "set_capability"):
+                        opts = v
+                        break
+            if opts is not None:
+                try:
+                    # Network log: the only place a 302 target is visible.
+                    opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+                except Exception as exc:
+                    self_hooks.rec("note", "", detail=f"loggingPrefs rejected: {exc}")
+            orig_init(self, *a, **kw)
+            self_hooks.drivers.append(self)
+            self_hooks.rec("driver started", getattr(self, "capabilities", {}).get(
+                "browserVersion", "") or "")
+
+        Chrome.__init__ = init        # type: ignore[assignment]
+
+        orig_quit = WebDriver.quit
+
+        def quit_(self: Any) -> None:
+            try:
+                self_hooks.rec("current_url BEFORE RETURN", raw_get_url(self))
+            except Exception:
+                pass
+            self_hooks.dump_perf(self)
+            return orig_quit(self)
+
+        WebDriver.quit = quit_        # type: ignore[assignment]
+        self.rec("hooks installed", "")
+
+    # -- network log -----------------------------------------------------
+    def dump_perf(self, drv: Any) -> None:
+        try:
+            entries = drv.get_log("performance")
+        except Exception as exc:
+            self.rec("note", "", detail=f"performance log unavailable: {type(exc).__name__}")
+            return
+        docs = 0
+        for e in entries or []:
+            try:
+                msg = json.loads(e.get("message", "{}")).get("message", {})
+            except Exception:
+                continue
+            m = msg.get("method", "")
+            p = msg.get("params", {}) or {}
+            if m == "Network.requestWillBeSent" and p.get("type") == "Document":
+                red = p.get("redirectResponse") or {}
+                docs += 1
+                url_ = (p.get("request") or {}).get("url", "")
+                self.rec("net-doc", url_,
+                         status=red.get("status", ""), frm=(red.get("url") or "")[:60])
+                # A redirect target is a document request that answered 3xx:
+                # that is the only evidence a hop existed at all.
+                if 300 <= int(red.get("status") or 0) < 400:
+                    self.rec("net-302", url_, status=red.get("status"),
+                             frm=(red.get("url") or "")[:60])
+            elif m == "Network.responseReceived":
+                r = p.get("response", {}) or {}
+                if 300 <= int(r.get("status") or 0) < 400:
+                    self.rec("net-302", r.get("url", ""), status=r.get("status"))
+        if not docs:
+            self.rec("note", "", detail="network log held no Document requests")
+
+    # -- summary ---------------------------------------------------------
+    def summary(self, inputs: List[str], steps: List[str], final: str) -> str:
+        hr("verdict")
+        skip = {"direct resolve INPUT", "hooks installed", "driver started", "note"}
+        seen: Dict[str, List[str]] = {}
+        for e in self.events:
+            if e["ch"] in skip:
+                continue
+            if authish(e.get("url", "")):
+                seen.setdefault(e["ch"], []).append(e["url"])
+
+        out(f"[verdict] browser input(s): {inputs or '-'}")
+        out(f"[verdict] browser output  : {final or '-'}")
+        out(f"[verdict] steps           : {steps or '-'}")
+        out(f"[verdict] auth URL seen in: { {k: len(v) for k, v in seen.items()} or 'NO CHANNEL'}")
+
+        handoff_auth = any(authish(u) for u in inputs)
+        out(f"[verdict] HANDOFF = {'AUTH_URL' if handoff_auth else 'GATE_URL (or other)'}")
+
+        if handoff_auth:
+            case = "A"
+            why = ("the browser was handed the auth URL and navigated away from it, "
+                   "so steps only ever held what came after")
+        elif "current_url" in seen:
+            case = "C"
+            why = ("the auth URL was the live current_url but never made it into "
+                   "steps - the loop stepped over it")
+        elif "net-302" in seen:
+            case = "B"
+            why = ("the auth URL appeared only as a redirect target inside the run; "
+                   "steps keep the committed URL, not the hop")
+        elif "net-doc" in seen:
+            case = "D"
+            why = "the auth URL was requested but never became the page"
+        else:
+            case = "E"
+            why = "no channel saw an auth URL at all on this device"
+
+        out(f"[verdict] CASE {case}: {why}")
+        out("TRACE-SUMMARY " + json.dumps({
+            "engine": "selenium", "case": case, "handoff": "auth" if handoff_auth else "gate",
+            "final": final, "auth_seen_in": sorted(seen.keys()), "events": len(self.events),
+        }, ensure_ascii=False))
+        return case
+
+
+self_hooks: SeleniumHooks
+
+
+def selenium_source_dump() -> None:
+    """Print the implementation actually loaded on this device."""
+    import inspect
+    from linkresolver.browser import BrowserResolver
+    hr("source on this device")
+    try:
+        src = inspect.getsource(BrowserResolver.resolve)
+    except Exception as exc:
+        out(f"[src] unavailable: {type(exc).__name__}: {exc}")
+        return
+    lines = src.splitlines()
+    out(f"[src] BrowserResolver.resolve, {len(lines)} lines")
+    for i, line in enumerate(lines[:110], 1):
+        out(f"[src] {i:>3}| {line}")
+    if len(lines) > 110:
+        out(f"[src] ... {len(lines) - 110} more lines")
+    marks = ("driver.get", "current_url", "implicitly_wait", ".click(", "sleep(",
+             "window_handles", "switch_to", "page_source", "get_log")
+    out("[src] navigation points:")
+    for i, line in enumerate(lines, 1):
+        for m in marks:
+            if m in line:
+                out(f"[src]   {i:>3}| {line.strip()[:110]}")
+                break
+
+
+def selenium_run(url: str, timeout: float) -> int:
+    global self_hooks
+    selenium_source_dump()
+    self_hooks = SeleniumHooks()
+    hr("instrumented run (selenium)")
+    self_hooks.install()
+    inputs, steps, final = bot_path(url, timeout)
+    if not inputs:
+        # The bot answered over HTTP, so the browser never ran. Drive it once
+        # directly, otherwise there is nothing to observe.
+        out("[bot] browser never ran through the bot - running it directly once")
+        try:
+            from linkresolver.browser import BrowserResolver
+            self_hooks.rec("direct resolve INPUT", url)
+            final, bsteps, note = BrowserResolver(headless=True, timeout=timeout).resolve(url)
+            steps = [getattr(s, "url", "") for s in bsteps]
+            inputs = [url]
+            out(f"[browser] direct resolve OUTPUT = {final or '-'}   ({note})")
+        except Exception as exc:
+            out(f"[browser] direct resolve failed: {type(exc).__name__}: {exc}")
+    case = self_hooks.summary(inputs, steps, final)
+    hr("done")
+    out(f"case={case}  - send the whole output back.")
+    return 0
+
+
 # ----------------------------------------------------------------------- main
 
 def main(argv: List[str]) -> int:
@@ -553,11 +811,14 @@ def main(argv: List[str]) -> int:
 
     hr("environment")
     ident = engine_identity()
-    if ident["engine"] == "selenium":
-        out("[env] this install is Selenium-based, not the Playwright engine in the repo.")
-        out("[env] stop here and send this header - the trace below assumes Playwright.")
-        return 2
     if ident["engine"].startswith("import failed"):
+        return 2
+    if ident["engine"] == "selenium":
+        out("[env] Selenium engine on this device - tracing it as it is, not "
+            "the Playwright copy in the repo.")
+        return selenium_run(url, timeout)
+    if ident["engine"] != "playwright":
+        out(f"[env] unrecognised engine ({ident['engine']}); refusing to guess.")
         return 2
 
     hr("baseline: what the bot itself returns")
