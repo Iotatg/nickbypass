@@ -132,7 +132,7 @@ cd "$DIR" || exit 0
 [ -f data/stopped ] && exit 0
 command -v tmux >/dev/null || exit 0
 tmux has-session -t nickbot 2>/dev/null && exit 0
-tmux new-session -d -s nickbot "python -m nickbot >> data/bot.log 2>&1"
+tmux new-session -d -s nickbot "bash deploy/termux-supervise.sh"
 EOF
 chmod +x "$BOOT_DIR/nickbot.sh"
 ok "boot hook: $BOOT_DIR/nickbot.sh"

@@ -157,8 +157,10 @@ def restart_soon(delay: float = RESTART_DELAY) -> None:
             pass
         try:
             os.execv(sys.executable, argv)
-        except Exception:
-            os._exit(1)
+        except Exception as exc:  # execv never returns on success
+            # Keep the old process alive instead of dying on the restart: a
+            # working bot that failed to restart beats a dead one.
+            print(f"[restart] execv failed: {exc}", file=sys.stderr, flush=True)
 
     threading.Thread(target=_go, name="restart", daemon=False).start()
 

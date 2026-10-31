@@ -182,7 +182,13 @@ bash deploy/termux-run.sh
 ```
 
 It starts the bot inside a `tmux` session, so closing Termux or switching apps
-doesn't kill it. Handy commands:
+doesn't kill it. Inside that session a small supervisor
+(`deploy/termux-supervise.sh`) restarts the bot if it ever exits — including the
+case where Android kills the process for low memory. It gives up after five
+quick crashes in a row, so a broken `.env` can't spin forever, and the reason is
+left in `data/bot.log`.
+
+Handy commands:
 
 ```bash
 bash deploy/termux-run.sh status   # is it up?

@@ -36,7 +36,7 @@ case "${1:-start}" in
       echo "already running — attach with: tmux attach -t $SESSION"
       exit 0
     fi
-    tmux new-session -d -s "$SESSION" "python -m nickbot >> $LOG 2>&1"
+    tmux new-session -d -s "$SESSION" "bash deploy/termux-supervise.sh"
     sleep 3
     if tmux has-session -t "$SESSION" 2>/dev/null; then
       echo "started (tmux session: $SESSION)"
